@@ -87,6 +87,12 @@ export class AgentIdentityStack extends Stack {
       actions: ["ssm:GetParameter"],
       resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/agent-identity/forge/*`],
     }));
+    proxyFn.addToRolePolicy(new PolicyStatement({
+      actions: ["ssm:PutParameter"],
+      resources: [
+        `arn:aws:ssm:${this.region}:${this.account}:parameter/agent-identity/forge/gitlab/pat/*`,
+      ],
+    }));
     httpApi.addRoutes({
       path: "/forge/{proxy+}",
       methods: [HttpMethod.ANY],

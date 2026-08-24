@@ -4,6 +4,8 @@ import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { handle } from "hono/aws-lambda";
 import { createProxyApp } from "./app.js";
 import { GithubForge } from "./github.js";
+import { GitlabForge } from "./gitlab.js";
+import { GitlabProvisioner } from "./gitlab-provision.js";
 import { SsmCredentialStore } from "./ssm.js";
 
 const table = process.env.TABLE_NAME!;
@@ -15,7 +17,19 @@ const credentials = new SsmCredentialStore();
 const app = createProxyApp({
   agents: new AgentsRepo(ddb, table, domain),
   nonces: new NoncesRepo(ddb, table),
-  forges: { github: new GithubForge({ credentials }) },
+  forges: {
+    github: new GithubForge({ credentials }),
+    gitlab: new GitlabForge({ credentials }),
+  },
+  provisioners: {
+    gitlab: new GitlabProvisioner({
+      config: {
+        adminToken: () => credentials.getParam("/agent-identity/forge/gitlab/admin-token"),
+        groupId: () => credentials.getParam("/agent-identity/forge/gitlab/group"),
+      },
+      sink: credentials,
+    }),
+  },
 });
 
 export const handler = handle(app);
