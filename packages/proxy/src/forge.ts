@@ -1,5 +1,6 @@
 import type {
-  CommentResult, CommitResult, CommitSpec, PrResult, PrSpec, RepoInfo, RepoRef,
+  CommentResult, CommitResult, CommitSpec, ForgeProvisionResult, PrResult, PrSpec,
+  RepoInfo, RepoRef,
 } from "@agent-identity/shared";
 
 /** The acting identity: name is the agentId, email its mailbox address.
@@ -50,4 +51,8 @@ export interface CredentialStore {
   /** Per-identity parameter first, shared fallback; throws
    *  ForgeError("not_provisioned") when neither exists. */
   resolve(service: string, agentId: string): Promise<string>;
+}
+
+export interface Provisioner {
+  provision(actor: Author): Promise<ForgeProvisionResult>;
 }

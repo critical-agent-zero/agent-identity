@@ -4,7 +4,7 @@ import type { AgentRecord } from "@agent-identity/api";
  *  rules will pattern-match on. */
 export interface ForgeOp {
   service: string;
-  kind: "repo" | "commit" | "pr" | "comment";
+  kind: "repo" | "commit" | "pr" | "comment" | "provision";
   owner: string;
   repo: string;
 }
