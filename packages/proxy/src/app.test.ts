@@ -231,3 +231,32 @@ describe("POST /forge/:service/pr and /comment", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("POST /forge/:service/provision", () => {
+  it("provisions via the registered provisioner and audits", async () => {
+    const provision = vi.fn(async () => ({ username: "agent-482913", email: "482913@agents.example" }));
+    const { deps, audit } = makeDeps({
+      agentOverride: { capabilities: ["github", "gitlab"] },
+      forges: { github: new FakeForge(), gitlab: new FakeForge() },
+      provisioners: { gitlab: { provision } },
+    });
+    const app = createProxyApp(deps);
+    const path = "/forge/gitlab/provision";
+    const res = await app.request(path, signed("POST", path));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ username: "agent-482913", email: "482913@agents.example" });
+    expect(provision).toHaveBeenCalledWith({ name: "482913", email: "482913@agents.example" });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: "482913", service: "gitlab", op: "provision", outcome: "ok",
+    }));
+  });
+
+  it("404s provisioning on a service without a provisioner", async () => {
+    const { deps } = makeDeps();
+    const app = createProxyApp(deps);
+    const path = "/forge/github/provision";
+    const res = await app.request(path, signed("POST", path));
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe("provisioning_unsupported");
+  });
+});
