@@ -53,7 +53,7 @@ export class GitlabForge implements Forge {
   private async fileExists(project: string, filePath: string, branch: string, agentId: string): Promise<boolean> {
     try {
       await this.gl("GET",
-        `/projects/${project}/repository/files/${encodeURIComponent(filePath)}?ref=${branch}`,
+        `/projects/${project}/repository/files/${encodeURIComponent(filePath)}?ref=${encodeURIComponent(branch)}`,
         agentId);
       return true;
     } catch (err) {

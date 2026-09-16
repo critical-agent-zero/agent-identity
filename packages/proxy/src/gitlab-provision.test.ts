@@ -16,15 +16,16 @@ function makeFetch(routes: Record<string, { status?: number; json?: unknown }>) 
   return { fn: fn as unknown as typeof globalThis.fetch, calls };
 }
 
-function makeDeps(fetchFn: typeof globalThis.fetch) {
+function makeDeps(fetchFn: typeof globalThis.fetch, alreadyProvisioned = false) {
   const put = vi.fn(async () => {});
+  const has = vi.fn(async () => alreadyProvisioned);
   const provisioner = new GitlabProvisioner({
     config: { adminToken: async () => "owner-tok", groupId: async () => "42" },
-    sink: { put },
+    sink: { put, has },
     fetch: fetchFn,
     now: () => Date.parse("2026-08-24T00:00:00Z"),
   });
-  return { provisioner, put };
+  return { provisioner, put, has };
 }
 
 describe("GitlabProvisioner", () => {
@@ -76,5 +77,42 @@ describe("GitlabProvisioner", () => {
     });
     const { provisioner } = makeDeps(fn);
     await expect(provisioner.provision(actor)).rejects.toMatchObject({ kind: "upstream_auth" });
+  });
+
+  it("skips minting a new PAT when the identity already holds a credential", async () => {
+    const { fn, calls } = makeFetch({
+      [`GET ${G}/service_accounts`]: {
+        json: [{ id: 777, username: "agent-482913", email: "482913@agents.example" }],
+      },
+    });
+    const { provisioner, put } = makeDeps(fn, /* alreadyProvisioned */ true);
+    const result = await provisioner.provision(actor);
+    expect(result).toEqual({ username: "agent-482913", email: "482913@agents.example" });
+    expect(put).not.toHaveBeenCalled();
+    expect(calls.some((c) => c.url.endsWith("/personal_access_tokens"))).toBe(false);
+    expect(calls.some((c) => c.url === `${G}/members`)).toBe(false);
+  });
+
+  it("does not swallow a non-409 membership failure", async () => {
+    const { fn } = makeFetch({
+      [`GET ${G}/service_accounts`]: {
+        json: [{ id: 777, username: "agent-482913", email: "482913@agents.example" }],
+      },
+      [`POST ${G}/members`]: { status: 400, json: { message: "member access_level is invalid" } },
+    });
+    const { provisioner } = makeDeps(fn);
+    await expect(provisioner.provision(actor)).rejects.toMatchObject({ kind: "invalid" });
+  });
+
+  it("throws a clear error when GitLab returns no PAT", async () => {
+    const { fn } = makeFetch({
+      [`GET ${G}/service_accounts`]: {
+        json: [{ id: 777, username: "agent-482913", email: "482913@agents.example" }],
+      },
+      [`POST ${G}/members`]: { json: {} },
+      [`POST ${G}/service_accounts/777/personal_access_tokens`]: { json: {} },
+    });
+    const { provisioner } = makeDeps(fn);
+    await expect(provisioner.provision(actor)).rejects.toThrow(/did not return a PAT/);
   });
 });

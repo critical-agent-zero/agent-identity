@@ -68,4 +68,11 @@ describe("SsmCredentialStore.put and getParam", () => {
     const store = new SsmCredentialStore("/agent-identity/forge", { send } as never);
     expect(await store.getParam("/agent-identity/forge/gitlab/admin-token")).toBe("admintok");
   });
+
+  it("has() reports whether a per-identity credential exists", async () => {
+    const send = makeSsm({ "/agent-identity/forge/gitlab/pat/482913": "tok" });
+    const store = new SsmCredentialStore("/agent-identity/forge", { send } as never);
+    expect(await store.has("gitlab", "482913")).toBe(true);
+    expect(await store.has("gitlab", "999999")).toBe(false);
+  });
 });

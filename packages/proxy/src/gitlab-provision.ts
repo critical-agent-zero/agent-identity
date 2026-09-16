@@ -7,6 +7,7 @@ export interface ProvisionerConfig {
 }
 
 export interface TokenSink {
+  has(service: string, agentId: string): Promise<boolean>;
   put(service: string, agentId: string, token: string): Promise<void>;
 }
 
@@ -67,19 +68,29 @@ export class GitlabProvisioner implements Provisioner {
       });
     }
 
+    // Idempotent: once an identity holds a stored credential it is provisioned.
+    // Re-minting would orphan the prior PAT (still live on GitLab, no longer
+    // stored). To force a fresh token, delete the identity's SSM parameter.
+    if (await this.opts.sink.has("gitlab", actor.name)) {
+      return { username: acct.username, email: acct.email };
+    }
+
     try {
       await this.gl(token, "POST", `/groups/${gid}/members`, {
         user_id: acct.id, access_level: 30,
       });
     } catch (err) {
-      if (!(err instanceof ForgeError && /member/i.test(err.message))) throw err;
+      // Tolerate only "already a member" (409), gated on status — matching the
+      // error body text would swallow genuine membership failures too.
+      if (!(err instanceof ForgeError && err.upstream === 409)) throw err;
     }
 
     const expires = new Date(this.now() + YEAR_MS).toISOString().slice(0, 10);
-    const pat = await this.gl<{ token: string }>(token, "POST",
+    const pat = await this.gl<{ token?: string }>(token, "POST",
       `/groups/${gid}/service_accounts/${acct.id}/personal_access_tokens`, {
         name: "agent-identity-proxy", scopes: ["api"], expires_at: expires,
       });
+    if (!pat.token) throw new ForgeError("invalid", "gitlab did not return a PAT");
     await this.opts.sink.put("gitlab", actor.name, pat.token);
 
     return { username: acct.username, email: acct.email };

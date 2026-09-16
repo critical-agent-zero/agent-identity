@@ -259,4 +259,20 @@ describe("POST /forge/:service/provision", () => {
     expect(res.status).toBe(404);
     expect((await res.json()).error).toBe("provisioning_unsupported");
   });
+
+  it("does not echo admin-context detail on a provision error", async () => {
+    const provision = vi.fn(async () => {
+      throw new ForgeError("upstream_auth", "admin token bad: group 42 service_accounts detail", 401);
+    });
+    const { deps } = makeDeps({
+      agentOverride: { capabilities: ["github", "gitlab"] },
+      forges: { github: new FakeForge(), gitlab: new FakeForge() },
+      provisioners: { gitlab: { provision } },
+    });
+    const app = createProxyApp(deps);
+    const path = "/forge/gitlab/provision";
+    const res = await app.request(path, signed("POST", path));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "upstream_credential_invalid" });
+  });
 });

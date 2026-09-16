@@ -70,7 +70,12 @@ export function createProxyApp(deps: ProxyDeps): Hono {
           upstreamStatus: err.upstream, latencyMs: Date.now() - started,
         });
         const label = err.kind === "upstream_auth" ? "upstream_credential_invalid" : err.kind;
-        return c.json({ error: label, detail: err.message }, statusFor(err.kind) as never);
+        // provision runs with the group-owner admin token; its upstream error
+        // text is admin-context, so don't echo it to the calling agent.
+        const payload = op.kind === "provision"
+          ? { error: label }
+          : { error: label, detail: err.message };
+        return c.json(payload, statusFor(err.kind) as never);
       }
       // Never silently swallow an unexpected failure in a credential proxy.
       audit({ ...base, outcome: "unexpected", latencyMs: Date.now() - started });
