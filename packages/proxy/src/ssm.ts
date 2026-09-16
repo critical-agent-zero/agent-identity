@@ -44,6 +44,10 @@ export class SsmCredentialStore implements CredentialStore {
     return value;
   }
 
+  async has(service: string, agentId: string): Promise<boolean> {
+    return (await this.tryGet(`${this.basePath}/${service}/pat/${agentId}`)) !== undefined;
+  }
+
   async put(service: string, agentId: string, token: string): Promise<void> {
     await this.ssm.send(new PutParameterCommand({
       Name: `${this.basePath}/${service}/pat/${agentId}`,

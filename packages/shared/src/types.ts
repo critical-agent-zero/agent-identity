@@ -62,3 +62,8 @@ export interface CommentResult {
   id: number;
   url: string;
 }
+
+export interface ForgeProvisionResult {
+  username: string;
+  email: string;
+}

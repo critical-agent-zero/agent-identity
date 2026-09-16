@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ForgeError, statusFor } from "./forge.js";
+import { ForgeError, statusFor, type Provisioner } from "./forge.js";
 
 describe("ForgeError", () => {
   it("maps each kind to its HTTP status", () => {
@@ -17,5 +17,15 @@ describe("ForgeError", () => {
     expect(err.kind).toBe("rate_limited");
     expect(err.upstream).toBe(403);
     expect(err.message).toBe("slow down");
+  });
+});
+
+describe("Provisioner port", () => {
+  it("is implementable and returns a ForgeProvisionResult", async () => {
+    const p: Provisioner = {
+      provision: async (actor) => ({ username: `agent-${actor.name}`, email: actor.email }),
+    };
+    expect(await p.provision({ name: "482913", email: "482913@d" }))
+      .toEqual({ username: "agent-482913", email: "482913@d" });
   });
 });

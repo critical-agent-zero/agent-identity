@@ -4,7 +4,7 @@ import {
 import type { Context } from "hono";
 import { Hono } from "hono";
 import {
-  ForgeError, statusFor, type Author, type Forge,
+  ForgeError, statusFor, type Author, type Forge, type Provisioner,
 } from "./forge.js";
 import { evaluate, type ForgeOp } from "./policy.js";
 
@@ -12,6 +12,7 @@ export interface ProxyDeps {
   agents: AgentsRepo;
   nonces: NoncesRepo;
   forges: Record<string, Forge>;
+  provisioners?: Record<string, Provisioner>;
   audit?: (line: Record<string, unknown>) => void;
 }
 
@@ -69,7 +70,12 @@ export function createProxyApp(deps: ProxyDeps): Hono {
           upstreamStatus: err.upstream, latencyMs: Date.now() - started,
         });
         const label = err.kind === "upstream_auth" ? "upstream_credential_invalid" : err.kind;
-        return c.json({ error: label, detail: err.message }, statusFor(err.kind) as never);
+        // provision runs with the group-owner admin token; its upstream error
+        // text is admin-context, so don't echo it to the calling agent.
+        const payload = op.kind === "provision"
+          ? { error: label }
+          : { error: label, detail: err.message };
+        return c.json(payload, statusFor(err.kind) as never);
       }
       // Never silently swallow an unexpected failure in a credential proxy.
       audit({ ...base, outcome: "unexpected", latencyMs: Date.now() - started });
@@ -144,6 +150,15 @@ export function createProxyApp(deps: ProxyDeps): Hono {
       { owner: b.owner as string, name: b.repo as string },
       b.issue as number, `${b.body}${footer}`, g.actor,
     ));
+  });
+
+  app.post("/forge/:service/provision", async (c) => {
+    const g = guard(c);
+    if (g instanceof Response) return g;
+    const provisioner = deps.provisioners?.[g.service];
+    if (!provisioner) return c.json({ error: "provisioning_unsupported" }, 404);
+    const op: ForgeOp = { service: g.service, kind: "provision", owner: "-", repo: "-" };
+    return run(c, g, op, () => provisioner.provision(g.actor));
   });
 
   return app;
