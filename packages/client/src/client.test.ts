@@ -107,4 +107,16 @@ describe("forge methods", () => {
     expect(url).toBe("https://api.example/forge/gitlab/provision");
   });
 
+  it("forgeFork posts to the fork path", async () => {
+    const fetchMock = makeFetch({ owner: "fork-acct", repo: "r", defaultBranch: "main" });
+    const client = new AgentIdentityClient({
+      apiUrl: "https://api.example", keypair: kp, fetch: fetchMock as never,
+    });
+    const r = await client.forgeFork("github", { owner: "o", name: "r" });
+    expect(r).toEqual({ owner: "fork-acct", repo: "r", defaultBranch: "main" });
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.example/forge/github/fork");
+    expect(JSON.parse(init.body as string)).toEqual({ owner: "o", repo: "r" });
+  });
+
 });

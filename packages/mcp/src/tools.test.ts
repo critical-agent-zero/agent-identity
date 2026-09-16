@@ -111,4 +111,12 @@ describe("forge tools", () => {
     expect(r).toEqual({ username: "agent-1", email: "1@d" });
     expect(forgeProvision).toHaveBeenCalledWith("gitlab");
   });
+
+  it("forge_fork delegates with service defaulting to github", async () => {
+    const forgeFork = vi.fn(async () => ({ owner: "fork-acct", repo: "r", defaultBranch: "main" }));
+    const tools = makeTools(managerWith({ forgeFork }));
+    const r = await tools.forgeFork({ owner: "o", repo: "r" });
+    expect(r).toEqual({ owner: "fork-acct", repo: "r", defaultBranch: "main" });
+    expect(forgeFork).toHaveBeenCalledWith("github", { owner: "o", name: "r" });
+  });
 });

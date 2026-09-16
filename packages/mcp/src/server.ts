@@ -144,5 +144,14 @@ server.registerTool(
   async (args) => json(await tools.forgeProvision(args)),
 );
 
+server.registerTool(
+  "forge_fork",
+  {
+    description: "Fork a source repo so you can commit to your own copy and open a PR/MR back. Returns the fork's owner/repo/defaultBranch. Commit to the fork (owner = the returned owner), never to the source. service defaults to github.",
+    inputSchema: { service: z.string().optional(), owner: z.string(), repo: z.string() },
+  },
+  async (args) => json(await tools.forgeFork(args)),
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
