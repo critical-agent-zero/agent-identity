@@ -67,3 +67,9 @@ export interface ForgeProvisionResult {
   username: string;
   email: string;
 }
+
+export interface ForkResult {
+  owner: string;
+  repo: string;
+  defaultBranch: string;
+}
