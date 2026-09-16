@@ -87,6 +87,25 @@ describe("GitlabForge.openPullRequest and comment", () => {
     });
   });
 
+  it("opens a cross-project MR from a fork (head owner:branch) to the source", async () => {
+    const FORK = "https://gitlab.com/api/v4/projects/agent-482913%2Fr";
+    const { fn, calls } = makeFetch({
+      [`GET ${P}`]: { json: { id: 100 } },
+      [`POST ${FORK}/merge_requests`]: {
+        json: { iid: 9, web_url: "https://gitlab.com/o/r/-/merge_requests/9" },
+      },
+    });
+    const forge = new GitlabForge({ credentials, fetch: fn });
+    const pr = await forge.openPullRequest({ owner: "o", name: "r" },
+      { head: "agent-482913:feat/x", base: "main", title: "t", body: "d" }, actor);
+    expect(pr).toEqual({ number: 9, url: "https://gitlab.com/o/r/-/merge_requests/9" });
+    const mrCall = calls.find((c) => c.url === `${FORK}/merge_requests`)!;
+    expect(JSON.parse(mrCall.init.body as string)).toEqual({
+      source_branch: "feat/x", target_branch: "main", title: "t", description: "d",
+      target_project_id: 100,
+    });
+  });
+
   it("comments as an issue note with a constructed url", async () => {
     const { fn } = makeFetch({
       [`POST ${P}/issues/12/notes`]: { json: { id: 55 } },
@@ -108,5 +127,18 @@ describe("GitlabForge.fork", () => {
     const fork = await forge.fork({ owner: "o", name: "r" }, actor);
     expect(fork).toEqual({ owner: "agent-482913", repo: "r", defaultBranch: "main" });
     expect(calls[0]!.init.method).toBe("POST");
+  });
+
+  it("is idempotent: a 409 (already forked) returns the existing fork", async () => {
+    const FORK = "https://gitlab.com/api/v4/projects/agent-482913%2Fr";
+    const { fn } = makeFetch({
+      [`POST ${P}/fork`]: { status: 409, json: { message: "already forked" } },
+      [`GET ${FORK}`]: {
+        json: { path: "r", default_branch: "main", namespace: { full_path: "agent-482913" } },
+      },
+    });
+    const forge = new GitlabForge({ credentials, fetch: fn });
+    const fork = await forge.fork({ owner: "o", name: "r" }, actor);
+    expect(fork).toEqual({ owner: "agent-482913", repo: "r", defaultBranch: "main" });
   });
 });

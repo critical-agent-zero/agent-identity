@@ -55,9 +55,14 @@ commit; authorship is set server-side to YOUR identity), `forge_open_pr`,
 (gitlab). **Contribution model: fork, then PR.** You do not have write
 access to source repos — call `forge_fork` on the source, commit to the
 returned fork (`forge_commit` with `owner` = the fork owner), then
-`forge_open_pr` on the source with `head` = `<fork-owner>:<branch>`. The
-proxy rejects a commit aimed at anything but your fork namespace. `service`
-defaults to `"github"` (`forge_provision` defaults to `"gitlab"`). A
-`missing_capability` error means this identity is not onboarded; a
-`not_provisioned` error on gitlab means call `forge_provision` first.
-Force-push and branch deletion do not exist in this surface.
+`forge_open_pr` on the source with `head` = `<fork-owner>:<branch>` (this
+opens a cross-fork PR on GitHub, or a cross-project MR on GitLab). The
+proxy rejects a commit aimed at anything but your fork namespace. Forking
+is asynchronous — if a `forge_commit` right after `forge_fork` returns
+`not_found`, wait a moment and retry; the fork is still importing.
+`service` defaults to `"github"` (`forge_provision` defaults to
+`"gitlab"`). A `missing_capability` error means this identity is not
+onboarded; a `not_provisioned` error on gitlab means call `forge_provision`
+first. Force-push and branch deletion do not exist in this surface. Note:
+on GitHub all agents share one fork account, so use a distinct branch name;
+on GitLab each identity forks into its own namespace.
