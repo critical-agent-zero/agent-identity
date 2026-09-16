@@ -81,6 +81,10 @@ export class AgentIdentityStack extends Stack {
     const proxyFn = new NodejsFunction(this, "Proxy", {
       ...fnDefaults,
       entry: pkg("proxy/src/lambda.ts"),
+      environment: {
+        ...commonEnv,
+        FORGE_GITHUB_FORK_OWNER: this.node.tryGetContext("githubForkOwner") ?? "",
+      },
     });
     table.grantReadWriteData(proxyFn);
     proxyFn.addToRolePolicy(new PolicyStatement({

@@ -1,5 +1,6 @@
 import type { ForgeProvisionResult } from "@agent-identity/shared";
 import { ForgeError, type Author, type Provisioner } from "./forge.js";
+import { gitlabServiceAccountUsername } from "./gitlab-names.js";
 
 export interface ProvisionerConfig {
   adminToken(): Promise<string>;
@@ -58,7 +59,7 @@ export class GitlabProvisioner implements Provisioner {
   async provision(actor: Author): Promise<ForgeProvisionResult> {
     const token = await this.opts.config.adminToken();
     const gid = await this.opts.config.groupId();
-    const username = `agent-${actor.name}`;
+    const username = gitlabServiceAccountUsername(actor.name);
 
     const accounts = await this.gl<ServiceAccount[]>(token, "GET", `/groups/${gid}/service_accounts`);
     let acct = accounts.find((a) => a.username === username);

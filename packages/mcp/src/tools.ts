@@ -93,6 +93,15 @@ export function makeTools(manager: ClaimManager) {
       }
     },
 
+    async forgeFork(args: { service?: string; owner: string; repo: string }) {
+      try {
+        return await manager.client().forgeFork(args.service ?? "github",
+          { owner: args.owner, name: args.repo });
+      } catch (err) {
+        return { error: (err as Error).message };
+      }
+    },
+
     async forgeProvision(args: { service?: string }) {
       try {
         return await manager.client().forgeProvision(args.service ?? "gitlab");

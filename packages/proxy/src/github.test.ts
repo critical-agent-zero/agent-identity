@@ -145,3 +145,17 @@ describe("GithubForge.openPullRequest and comment", () => {
     expect(c).toEqual({ id: 33, url: "https://github.com/o/r/issues/12#c33" });
   });
 });
+
+describe("GithubForge.fork", () => {
+  it("forks under the credential account and returns the fork coordinates", async () => {
+    const { fn, calls } = makeFetch({
+      [`POST ${B}/forks`]: {
+        json: { name: "r", owner: { login: "critical-agent-zero" }, default_branch: "main" },
+      },
+    });
+    const forge = new GithubForge({ credentials, fetch: fn });
+    const fork = await forge.fork({ owner: "o", name: "r" }, actor);
+    expect(fork).toEqual({ owner: "critical-agent-zero", repo: "r", defaultBranch: "main" });
+    expect(calls[0]!.init.method).toBe("POST");
+  });
+});

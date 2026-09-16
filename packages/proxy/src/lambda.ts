@@ -6,6 +6,7 @@ import { createProxyApp } from "./app.js";
 import { GithubForge } from "./github.js";
 import { GitlabForge } from "./gitlab.js";
 import { GitlabProvisioner } from "./gitlab-provision.js";
+import { forkNamespacePolicy } from "./policy.js";
 import { SsmCredentialStore } from "./ssm.js";
 
 const table = process.env.TABLE_NAME!;
@@ -30,6 +31,7 @@ const app = createProxyApp({
       sink: credentials,
     }),
   },
+  policy: forkNamespacePolicy({ githubForkOwner: process.env.FORGE_GITHUB_FORK_OWNER }),
 });
 
 export const handler = handle(app);

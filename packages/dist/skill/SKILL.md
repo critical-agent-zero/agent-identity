@@ -47,13 +47,22 @@ these commands to the human rather than editing config by hand.
 ## Forge operations (via the access proxy)
 
 If this deployment runs the forge proxy and your identity has the service
-capability (`github` or `gitlab`), five tools work: `forge_repo` (default
-branch + head sha), `forge_commit` (create a commit — authorship is set
-server-side to YOUR identity; you cannot and need not supply an author),
-`forge_open_pr`, `forge_comment` (both append an attribution footer naming
-your identity), and `forge_provision`. `service` defaults to `"github"`
-(`forge_provision` defaults to `"gitlab"`). A `missing_capability` error
-means this identity is not onboarded — relay the remediation text to the
-human. A `not_provisioned` error on gitlab means: call `forge_provision`,
-then `wait_for_email` for the GitLab confirmation mail and follow its
-link. Force-push and branch deletion do not exist in this surface.
+capability (`github` or `gitlab`), these tools work: `forge_repo` (default
+branch + head sha), `forge_fork` (fork a source repo into your own
+namespace — returns the fork's owner/repo), `forge_commit` (create a
+commit; authorship is set server-side to YOUR identity), `forge_open_pr`,
+`forge_comment` (both append an attribution footer), and `forge_provision`
+(gitlab). **Contribution model: fork, then PR.** You do not have write
+access to source repos — call `forge_fork` on the source, commit to the
+returned fork (`forge_commit` with `owner` = the fork owner), then
+`forge_open_pr` on the source with `head` = `<fork-owner>:<branch>` (this
+opens a cross-fork PR on GitHub, or a cross-project MR on GitLab). The
+proxy rejects a commit aimed at anything but your fork namespace. Forking
+is asynchronous — if a `forge_commit` right after `forge_fork` returns
+`not_found`, wait a moment and retry; the fork is still importing.
+`service` defaults to `"github"` (`forge_provision` defaults to
+`"gitlab"`). A `missing_capability` error means this identity is not
+onboarded; a `not_provisioned` error on gitlab means call `forge_provision`
+first. Force-push and branch deletion do not exist in this surface. Note:
+on GitHub all agents share one fork account, so use a distinct branch name;
+on GitLab each identity forks into its own namespace.

@@ -1,9 +1,10 @@
 import type {
-  CommentResult, CommitResult, CommitSpec, PrResult, PrSpec, RepoInfo, RepoRef,
+  CommentResult, CommitResult, CommitSpec, ForkResult, PrResult, PrSpec, RepoInfo, RepoRef,
 } from "@agent-identity/shared";
 import {
   ForgeError, type Author, type CredentialStore, type Forge,
 } from "./forge.js";
+import { gitlabServiceAccountUsername } from "./gitlab-names.js";
 
 export interface GitlabForgeOptions {
   credentials: CredentialStore;
@@ -87,10 +88,27 @@ export class GitlabForge implements Forge {
   }
 
   async openPullRequest(ref: RepoRef, spec: PrSpec, actor: Author): Promise<PrResult> {
+    // A "<forkOwner>:<branch>" head means a cross-project MR from the fork to
+    // the source (ref) — the fork-and-PR flow. GitLab creates the MR on the
+    // SOURCE (fork) project with target_project_id pointing at the upstream.
+    // A bare branch name is a same-project MR.
+    const colon = spec.head.indexOf(":");
+    if (colon === -1) {
+      const mr = await this.gl<{ iid: number; web_url: string }>(
+        "POST", `/projects/${this.project(ref)}/merge_requests`, actor.name, {
+          source_branch: spec.head, target_branch: spec.base,
+          title: spec.title, description: spec.body,
+        });
+      return { number: mr.iid, url: mr.web_url };
+    }
+    const forkOwner = spec.head.slice(0, colon);
+    const sourceBranch = spec.head.slice(colon + 1);
+    const upstream = await this.gl<{ id: number }>("GET", `/projects/${this.project(ref)}`, actor.name);
     const mr = await this.gl<{ iid: number; web_url: string }>(
-      "POST", `/projects/${this.project(ref)}/merge_requests`, actor.name, {
-        source_branch: spec.head, target_branch: spec.base,
-        title: spec.title, description: spec.body,
+      "POST", `/projects/${this.project({ owner: forkOwner, name: ref.name })}/merge_requests`,
+      actor.name, {
+        source_branch: sourceBranch, target_branch: spec.base,
+        title: spec.title, description: spec.body, target_project_id: upstream.id,
       });
     return { number: mr.iid, url: mr.web_url };
   }
@@ -102,5 +120,20 @@ export class GitlabForge implements Forge {
       id: note.id,
       url: `${this.web}/${ref.owner}/${ref.name}/-/issues/${issue}#note_${note.id}`,
     };
+  }
+
+  async fork(ref: RepoRef, actor: Author): Promise<ForkResult> {
+    type Project = { path: string; default_branch: string; namespace: { full_path: string } };
+    try {
+      const f = await this.gl<Project>("POST", `/projects/${this.project(ref)}/fork`, actor.name);
+      return { owner: f.namespace.full_path, repo: f.path, defaultBranch: f.default_branch };
+    } catch (err) {
+      // Already forked into our namespace (409) — return the existing fork so
+      // fork is idempotent, matching GitHub's behavior.
+      if (!(err instanceof ForgeError && err.upstream === 409)) throw err;
+      const existing = { owner: gitlabServiceAccountUsername(actor.name), name: ref.name };
+      const p = await this.gl<Project>("GET", `/projects/${this.project(existing)}`, actor.name);
+      return { owner: p.namespace.full_path, repo: p.path, defaultBranch: p.default_branch };
+    }
   }
 }
