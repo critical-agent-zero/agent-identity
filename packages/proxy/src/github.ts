@@ -1,5 +1,5 @@
 import type {
-  CommentResult, CommitResult, CommitSpec, PrResult, PrSpec, RepoInfo, RepoRef,
+  CommentResult, CommitResult, CommitSpec, ForkResult, PrResult, PrSpec, RepoInfo, RepoRef,
 } from "@agent-identity/shared";
 import {
   ForgeError, type Author, type CredentialStore, type Forge,
@@ -95,5 +95,11 @@ export class GithubForge implements Forge {
     const c = await this.gh<{ id: number; html_url: string }>(
       "POST", `/repos/${ref.owner}/${ref.name}/issues/${issue}/comments`, actor.name, { body });
     return { id: c.id, url: c.html_url };
+  }
+
+  async fork(ref: RepoRef, actor: Author): Promise<ForkResult> {
+    const f = await this.gh<{ name: string; owner: { login: string }; default_branch: string }>(
+      "POST", `/repos/${ref.owner}/${ref.name}/forks`, actor.name);
+    return { owner: f.owner.login, repo: f.name, defaultBranch: f.default_branch };
   }
 }
