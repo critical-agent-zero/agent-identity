@@ -6,13 +6,14 @@ import { Hono } from "hono";
 import {
   ForgeError, statusFor, type Author, type Forge, type Provisioner,
 } from "./forge.js";
-import { evaluate, type ForgeOp } from "./policy.js";
+import { evaluate, type ForgeOp, type Policy } from "./policy.js";
 
 export interface ProxyDeps {
   agents: AgentsRepo;
   nonces: NoncesRepo;
   forges: Record<string, Forge>;
   provisioners?: Record<string, Provisioner>;
+  policy?: Policy;
   audit?: (line: Record<string, unknown>) => void;
 }
 
@@ -53,7 +54,7 @@ export function createProxyApp(deps: ProxyDeps): Hono {
       agentId: g.agent.agentId, service: op.service, op: op.kind,
       owner: op.owner, repo: op.repo,
     };
-    const decision = evaluate(g.agent, op);
+    const decision = (deps.policy ?? evaluate)(g.agent, op);
     if (!decision.allow) {
       audit({ ...base, outcome: "denied", reason: decision.reason });
       return c.json({ error: "denied", reason: decision.reason }, 403);

@@ -306,3 +306,24 @@ describe("POST /forge/:service/fork", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("policy enforcement", () => {
+  it("denies a commit the injected policy rejects, before calling the adapter, and audits it", async () => {
+    const denyOffFork: import("./policy.js").Policy = (_a, op) =>
+      op.kind === "commit" && op.owner !== "fork-acct"
+        ? { allow: false, reason: "off-fork" }
+        : { allow: true };
+    const { deps, forge, audit } = makeDeps({ policy: denyOffFork });
+    const app = createProxyApp(deps);
+    const path = "/forge/github/commit";
+    const body = JSON.stringify({
+      owner: "critical-labs", repo: "agent-identity", branch: "main",
+      message: "m", files: [{ path: "f", content: "x" }],
+    });
+    const res = await app.request(path, { ...signed("POST", path, body), body });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe("denied");
+    expect(forge.calls.some((c) => c[0] === "createCommit")).toBe(false);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ outcome: "denied" }));
+  });
+});
