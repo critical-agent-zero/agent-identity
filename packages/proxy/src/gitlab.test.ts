@@ -96,3 +96,17 @@ describe("GitlabForge.openPullRequest and comment", () => {
     expect(c).toEqual({ id: 55, url: "https://gitlab.com/o/r/-/issues/12#note_55" });
   });
 });
+
+describe("GitlabForge.fork", () => {
+  it("forks into the service-account namespace and returns fork coordinates", async () => {
+    const { fn, calls } = makeFetch({
+      [`POST ${P}/fork`]: {
+        json: { path: "r", default_branch: "main", namespace: { full_path: "agent-482913" } },
+      },
+    });
+    const forge = new GitlabForge({ credentials, fetch: fn });
+    const fork = await forge.fork({ owner: "o", name: "r" }, actor);
+    expect(fork).toEqual({ owner: "agent-482913", repo: "r", defaultBranch: "main" });
+    expect(calls[0]!.init.method).toBe("POST");
+  });
+});
