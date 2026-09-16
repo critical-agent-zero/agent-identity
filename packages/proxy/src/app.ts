@@ -152,6 +152,15 @@ export function createProxyApp(deps: ProxyDeps): Hono {
     ));
   });
 
+  app.post("/forge/:service/fork", async (c) => {
+    const g = guard(c);
+    if (g instanceof Response) return g;
+    const b = await c.req.json().catch(() => undefined) as Record<string, unknown> | undefined;
+    if (!b || !isStr(b.owner) || !isStr(b.repo)) return c.json({ error: "invalid_request" }, 400);
+    const op: ForgeOp = { service: g.service, kind: "fork", owner: b.owner, repo: b.repo };
+    return run(c, g, op, () => g.forge.fork({ owner: b.owner as string, name: b.repo as string }, g.actor));
+  });
+
   app.post("/forge/:service/provision", async (c) => {
     const g = guard(c);
     if (g instanceof Response) return g;

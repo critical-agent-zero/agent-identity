@@ -54,6 +54,11 @@ export class FakeForge implements Forge {
     if (this.failWith) throw this.failWith;
     return { id: 9, url: "https://forge/c/9" };
   }
+  async fork(ref: RepoRef, actor: Author) {
+    this.calls.push(["fork", ref, actor]);
+    if (this.failWith) throw this.failWith;
+    return { owner: "fork-acct", repo: ref.name, defaultBranch: "main" };
+  }
 }
 
 export function makeDeps(overrides: Partial<ProxyDeps> & { agentOverride?: Partial<AgentRecord> } = {}) {
@@ -274,5 +279,30 @@ describe("POST /forge/:service/provision", () => {
     const res = await app.request(path, signed("POST", path));
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: "upstream_credential_invalid" });
+  });
+});
+
+describe("POST /forge/:service/fork", () => {
+  it("forks via the adapter with the actor and returns fork coordinates", async () => {
+    const { deps, forge } = makeDeps();
+    const app = createProxyApp(deps);
+    const path = "/forge/github/fork";
+    const body = JSON.stringify({ owner: "critical-labs", repo: "agent-identity" });
+    const res = await app.request(path, { ...signed("POST", path, body), body });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ owner: "fork-acct", repo: "agent-identity", defaultBranch: "main" });
+    const [name, ref, actor] = forge.calls.at(-1)!;
+    expect(name).toBe("fork");
+    expect(ref).toEqual({ owner: "critical-labs", name: "agent-identity" });
+    expect(actor).toEqual({ name: "482913", email: "482913@agents.example" });
+  });
+
+  it("400s a fork request missing fields", async () => {
+    const { deps } = makeDeps();
+    const app = createProxyApp(deps);
+    const path = "/forge/github/fork";
+    const body = JSON.stringify({ owner: "o" });
+    const res = await app.request(path, { ...signed("POST", path, body), body });
+    expect(res.status).toBe(400);
   });
 });

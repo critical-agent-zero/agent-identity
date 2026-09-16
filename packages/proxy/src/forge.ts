@@ -1,5 +1,5 @@
 import type {
-  CommentResult, CommitResult, CommitSpec, ForgeProvisionResult, PrResult, PrSpec,
+  CommentResult, CommitResult, CommitSpec, ForgeProvisionResult, ForkResult, PrResult, PrSpec,
   RepoInfo, RepoRef,
 } from "@agent-identity/shared";
 
@@ -45,6 +45,7 @@ export interface Forge {
   createCommit(ref: RepoRef, spec: CommitSpec, actor: Author): Promise<CommitResult>;
   openPullRequest(ref: RepoRef, spec: PrSpec, actor: Author): Promise<PrResult>;
   comment(ref: RepoRef, issue: number, body: string, actor: Author): Promise<CommentResult>;
+  fork(ref: RepoRef, actor: Author): Promise<ForkResult>;
 }
 
 export interface CredentialStore {
