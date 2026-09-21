@@ -81,13 +81,23 @@ describe("onboardGithubEmail", () => {
     expect(r.verificationLink).toBe(link);
   });
 
-  it("skips add when present-but-unverified and still surfaces the link", async () => {
+  it("re-adds when present-but-unverified (to nudge a resend) and surfaces the link", async () => {
     const addEmail = vi.fn(async () => {});
     const api = fakeApi({ emails: [{ email: ADDR, verified: false }], addEmail });
     const r = await onboardGithubEmail({
       address: ADDR, api, mailbox: fakeMailbox([verifyEmail], [link]), ...fast,
     });
-    expect(addEmail).not.toHaveBeenCalled();
+    expect(addEmail).toHaveBeenCalledWith(ADDR);
+    expect(r.status).toBe("pending");
+    expect(r.verificationLink).toBe(link);
+  });
+
+  it("tolerates a duplicate re-add error when present-but-unverified", async () => {
+    const addEmail = vi.fn(async () => { throw new Error("GitHub 422: already exists"); });
+    const api = fakeApi({ emails: [{ email: ADDR, verified: false }], addEmail });
+    const r = await onboardGithubEmail({
+      address: ADDR, api, mailbox: fakeMailbox([verifyEmail], [link]), ...fast,
+    });
     expect(r.status).toBe("pending");
     expect(r.verificationLink).toBe(link);
   });

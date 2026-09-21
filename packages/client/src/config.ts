@@ -47,7 +47,8 @@ export function resolveFleetKey(
 }
 
 // GitHub PAT (bot account, user scope) for the onboarding-side email flow —
-// operator only, never handed to agents. Env first, then the mode-600 file.
+// operator only, never handed to agents. Env first, then the github_pat file
+// (create it yourself, mode 600); reads do not enforce the mode.
 export const githubPatPath = (base: string = defaultProfileDir()): string =>
   join(base, "github_pat");
 

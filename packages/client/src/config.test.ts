@@ -45,9 +45,9 @@ describe("fleet key file", () => {
 describe("resolveGithubPat", () => {
   it("prefers env, else the github_pat file, else undefined", () => {
     const dir = base();
-    expect(resolveGithubPat(undefined, dir)).toBeUndefined();
+    expect(resolveGithubPat("", dir)).toBeUndefined(); // empty env = unset
     writeFileSync(githubPatPath(dir), "ghp_fromfile\n");
-    expect(resolveGithubPat(undefined, dir)).toBe("ghp_fromfile");
+    expect(resolveGithubPat("", dir)).toBe("ghp_fromfile");
     expect(resolveGithubPat("ghp_fromenv", dir)).toBe("ghp_fromenv");
   });
 });

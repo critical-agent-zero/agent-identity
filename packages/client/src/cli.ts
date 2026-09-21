@@ -106,16 +106,15 @@ github
     const pat = opts.pat ?? resolveGithubPat();
     if (!pat) return fail("no GitHub PAT (set AGENT_IDENTITY_GITHUB_PAT or ~/.config/agent-identity/github_pat)");
     const address = entry.profile.address;
+    const timeoutSeconds = Number.parseInt(opts.timeout, 10) || 120;
     const client = new AgentIdentityClient({ apiUrl, keypair: entry.profile });
     try {
-      const r = await onboardGithubEmail({
-        address, api: githubApi(pat), mailbox: client,
-        timeoutSeconds: Number.parseInt(opts.timeout, 10) || 120,
-      });
+      const r = await onboardGithubEmail({ address, api: githubApi(pat), mailbox: client, timeoutSeconds });
       if (r.status === "already-verified") {
         console.log(`${address} is already verified on ${r.login} — commits by ${agentId} already link to it.`);
       } else if (r.status === "no-verification-email") {
-        console.log(`Added ${address} to ${r.login}, but no verification email arrived within ${opts.timeout}s. Re-run to retry.`);
+        console.log(`Added ${address} to ${r.login}, but no verification email arrived within ${timeoutSeconds}s.`);
+        console.log(`Re-run to retry, or resend it from GitHub > Settings > Emails for that address.`);
       } else {
         console.log(`Added ${address} to ${r.login}. Finish by opening this link in a browser SIGNED IN AS ${r.login}:`);
         console.log(`  ${r.verificationLink}`);

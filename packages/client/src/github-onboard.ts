@@ -82,7 +82,14 @@ export async function onboardGithubEmail(deps: OnboardDeps): Promise<OnboardResu
   const addrLc = deps.address.toLowerCase();
   const existing = (await deps.api.listEmails()).find((e) => e.email.toLowerCase() === addrLc);
   if (existing?.verified) return { address: deps.address, login, status: "already-verified" };
-  if (!existing) await deps.api.addEmail(deps.address);
+  // Add when absent; re-add when present-but-unverified to nudge a fresh
+  // verification email (GitHub sends one on add). A duplicate re-add may error
+  // — tolerate it and fall through to poll for any existing verification mail.
+  if (!existing) {
+    await deps.api.addEmail(deps.address);
+  } else {
+    try { await deps.api.addEmail(deps.address); } catch { /* already present */ }
+  }
 
   const deadline = now() + timeoutMs;
   for (;;) {
@@ -90,6 +97,8 @@ export async function onboardGithubEmail(deps: OnboardDeps): Promise<OnboardResu
     const vmail = emails.find((e) => e.from.toLowerCase().includes("github") && /verif/i.test(e.subject));
     if (vmail) {
       const full = await deps.mailbox.getEmail(vmail.id);
+      // GitHub's verification links carry a /confirm_verification/ path segment;
+      // format-dependent, so a change here degrades to no-verification-email.
       const link = (full.links ?? []).find((l) => l.includes("confirm_verification"));
       if (link) return { address: deps.address, login, status: "pending", verificationLink: link };
     }
