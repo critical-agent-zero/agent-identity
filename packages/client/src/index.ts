@@ -6,3 +6,4 @@ export * from "./provision.js";
 export * from "./setup.js";
 export * from "./checklist.js";
 export * from "./wizard.js";
+export * from "./github-onboard.js";

@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  fleetKeyPath, readFleetKeyFile, readMachineConfig, resolveFleetKey,
-  writeFleetKeyFile, writeMachineConfig,
+  fleetKeyPath, githubPatPath, readFleetKeyFile, readMachineConfig, resolveFleetKey,
+  resolveGithubPat, writeFleetKeyFile, writeMachineConfig,
 } from "./config.js";
 
 const base = () => mkdtempSync(join(tmpdir(), "aid-cfg-"));
@@ -39,6 +39,16 @@ describe("fleet key file", () => {
     expect(readFleetKeyFile(dir)).toBeUndefined();
     writeFleetKeyFile("", dir);
     expect(readFleetKeyFile(dir)).toBeUndefined();
+  });
+});
+
+describe("resolveGithubPat", () => {
+  it("prefers env, else the github_pat file, else undefined", () => {
+    const dir = base();
+    expect(resolveGithubPat(undefined, dir)).toBeUndefined();
+    writeFileSync(githubPatPath(dir), "ghp_fromfile\n");
+    expect(resolveGithubPat(undefined, dir)).toBe("ghp_fromfile");
+    expect(resolveGithubPat("ghp_fromenv", dir)).toBe("ghp_fromenv");
   });
 });
 

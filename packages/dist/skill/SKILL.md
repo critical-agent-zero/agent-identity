@@ -66,3 +66,26 @@ onboarded; a `not_provisioned` error on gitlab means call `forge_provision`
 first. Force-push and branch deletion do not exist in this surface. Note:
 on GitHub all agents share one fork account, so use a distinct branch name;
 on GitLab each identity forks into its own namespace.
+
+## GitHub commit attribution & email onboarding (operator, not agents)
+
+On GitHub the proxy forces each commit's author to the acting identity
+(e.g. `956112 <956112@…>`). For that to link to a real, owned GitHub
+account — so commits show as authored by the bot account and count toward
+it — the identity's mailbox address must be a **verified email on the bot
+account**. That is what `agent-identity github onboard <agentId>` does: it
+adds the address via the bot's PAT and surfaces the pending verification
+link from the agent's mailbox.
+
+> **DANGER — keep onboarding separate from working sessions.** The
+> verification link only completes in a browser **signed in as the bot
+> account**, and a browser signed in as that account has **FULL, unscoped
+> account access** — far beyond anything the proxy grants. Email
+> verification is a rare, one-time **onboarding** action: run it in a
+> **dedicated onboarding session / constrained browser context** that
+> holds the bot login, then close it. **Never** carry a bot-authenticated
+> browser session into everyday worker agents — that would hand every agent
+> the whole account and defeat the proxy's scoped, audited credential
+> custody. Working agents use only the scoped `forge_*` tools; they never
+> need the account login.
+
