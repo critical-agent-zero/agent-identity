@@ -4,8 +4,10 @@ import { stdin as input, stdout as output } from "node:process";
 import * as readline from "node:readline/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { linkGithub, poolStatus } from "./claims.js";
-import { readMachineConfig, resolveFleetKey } from "./config.js";
+import { linkGithub, listPool, poolStatus } from "./claims.js";
+import { AgentIdentityClient } from "./client.js";
+import { readMachineConfig, resolveFleetKey, resolveGithubPat } from "./config.js";
+import { githubApi, onboardGithubEmail } from "./github-onboard.js";
 import { provisionIdentities } from "./provision.js";
 import { runSetup } from "./wizard.js";
 
@@ -85,6 +87,43 @@ github
         ...(opts.credentialRef ? { credentialRef: opts.credentialRef } : {}),
       });
       console.log(`linked ${agentId} -> github:${opts.username}`);
+    } catch (err) {
+      fail(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+github
+  .command("onboard <agentId>")
+  .description("add this identity's mailbox email to the bot GitHub account for commit attribution, and surface the verification link")
+  .option("--api-url <url>", "API base URL (default: machine config)")
+  .option("--pat <pat>", "GitHub PAT (default: env AGENT_IDENTITY_GITHUB_PAT, then ~/.config/agent-identity/github_pat)")
+  .option("--timeout <seconds>", "how long to wait for the verification email", "120")
+  .action(async (agentId: string, opts: { apiUrl?: string; pat?: string; timeout: string }) => {
+    const entry = listPool().find((p) => p.name === agentId || p.profile.agentId === agentId);
+    if (!entry?.profile.address) return fail(`no pool identity ${agentId} with a mailbox address`);
+    const apiUrl = opts.apiUrl ?? readMachineConfig().apiUrl ?? process.env.AGENT_IDENTITY_API_URL;
+    if (!apiUrl) return fail("no API URL (pass --api-url or run: agent-identity setup)");
+    const pat = opts.pat ?? resolveGithubPat();
+    if (!pat) return fail("no GitHub PAT (set AGENT_IDENTITY_GITHUB_PAT or ~/.config/agent-identity/github_pat)");
+    const address = entry.profile.address;
+    const timeoutSeconds = Number.parseInt(opts.timeout, 10) || 120;
+    const client = new AgentIdentityClient({ apiUrl, keypair: entry.profile });
+    try {
+      const r = await onboardGithubEmail({ address, api: githubApi(pat), mailbox: client, timeoutSeconds });
+      if (r.status === "already-verified") {
+        console.log(`${address} is already verified on ${r.login} — commits by ${agentId} already link to it.`);
+      } else if (r.status === "no-verification-email") {
+        console.log(`Added ${address} to ${r.login}, but no verification email arrived within ${timeoutSeconds}s.`);
+        console.log(`Re-run to retry, or resend it from GitHub > Settings > Emails for that address.`);
+      } else {
+        console.log(`Added ${address} to ${r.login}. Finish by opening this link in a browser SIGNED IN AS ${r.login}:`);
+        console.log(`  ${r.verificationLink}`);
+        console.log("");
+        console.log(`SECURITY: do this in a dedicated onboarding session. A browser signed in as ${r.login} has FULL`);
+        console.log("account access — far beyond the scoped proxy — so never carry that session into everyday worker");
+        console.log("agents. Onboarding is a one-time bootstrap, not an everyday capability.");
+      }
+      console.log(`(Proxy capability is separate: run  mailctl agent tag ${agentId} github  if not already done.)`);
     } catch (err) {
       fail(err instanceof Error ? err.message : String(err));
     }

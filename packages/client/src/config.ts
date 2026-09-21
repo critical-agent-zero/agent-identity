@@ -45,3 +45,25 @@ export function resolveFleetKey(
 ): string | undefined {
   return env || readFleetKeyFile(base);
 }
+
+// GitHub PAT (bot account, user scope) for the onboarding-side email flow —
+// operator only, never handed to agents. Env first, then the github_pat file
+// (create it yourself, mode 600); reads do not enforce the mode.
+export const githubPatPath = (base: string = defaultProfileDir()): string =>
+  join(base, "github_pat");
+
+export function readGithubPatFile(base?: string): string | undefined {
+  try {
+    const pat = readFileSync(githubPatPath(base), "utf8").trim();
+    return pat || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function resolveGithubPat(
+  env: string | undefined = process.env.AGENT_IDENTITY_GITHUB_PAT,
+  base?: string,
+): string | undefined {
+  return env || readGithubPatFile(base);
+}
