@@ -81,6 +81,10 @@ export class AgentIdentityStack extends Stack {
     const proxyFn = new NodejsFunction(this, "Proxy", {
       ...fnDefaults,
       entry: pkg("proxy/src/lambda.ts"),
+      // Forge operations make several sequential upstream calls (e.g. provision:
+      // list/create service account, add member, mint PAT, store in SSM), well
+      // beyond the 3s Lambda default. Cap under the API Gateway 30s limit.
+      timeout: Duration.seconds(29),
       environment: {
         ...commonEnv,
         FORGE_GITHUB_FORK_OWNER: this.node.tryGetContext("githubForkOwner") ?? "",
