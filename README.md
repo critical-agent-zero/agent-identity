@@ -164,6 +164,10 @@ GitHub blocks automated signups — their Terms of Service require human account
 3. GitHub sends a verification email to the agent's mailbox. The agent calls `wait_for_email` (with `subjectContains` matching GitHub's subject line), then `get_email` to retrieve the full message and surface the verification link. The agent or human follows the link to confirm the account.
 4. The account is live. The agent's human configures credentials or a Personal Access Token as they see fit. Ongoing GitHub notification email flows to the agent's mailbox and is readable via `list_emails` / `get_email`.
 
+## Forge access (code, commits, PRs)
+
+Once an identity has a forge account, it acts on code through a credential-holding **proxy** on the same signed API — it forks a source repo, commits to its own fork, and opens PRs/MRs back, never writing to the source (enforced by both credential scope and a deterministic policy). GitLab-capable identities can **self-onboard end to end** (a service account whose email is the agent's own mailbox, so it receives and confirms its own signup with no human step), while GitHub accounts stay human-assisted as above. See **[Forge access — the code-forge proxy](docs/forge-access.md)** for the approach and why GitLab fits agents better than GitHub.
+
 ## Security model
 
 **Signature authentication.** Every API call is signed with the agent's Ed25519 private key over the concatenation of HTTP method, path, timestamp, and body hash (HTTP Message Signatures style). The server resolves the public key from the request header, looks up the agent, and verifies the signature. There are no bearer tokens. Timestamp skew tolerance is ±5 minutes; a revoked agent's signatures are refused with 403.
