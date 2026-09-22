@@ -18,9 +18,12 @@ jobs:
           version: 9
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 20
+          # Staged publishing needs Node >= 22.14 and npm >= 11.15 (NPM_TOKEN is
+          # stage-only; plain `npm publish` would be rejected).
+          node-version: 22
           cache: pnpm
           registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@^11.15.0
       - run: pnpm install --frozen-lockfile
       - run: pnpm vitest run
       - run: npx tsc --noEmit -p tsconfig.base.json
@@ -29,9 +32,9 @@ jobs:
         run: |
           node packages/dist/dist/cli.js --help > /dev/null
           printf '' | timeout 10 env AGENT_IDENTITY_API_URL=https://smoke.invalid node packages/dist/dist/server.js
-      - name: Publish
+      - name: Stage publish (a maintainer approves on npmjs.com to go live)
         working-directory: packages/dist
-        run: pnpm publish --access public --no-git-checks
+        run: npm stage publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"

@@ -175,10 +175,14 @@ If the deploy job fails at `configure-aws-credentials`, the usual cause is a tru
 
 Bump `version` in `packages/dist/package.json`, commit, then tag and push:
 `git tag v<version> && git push origin v<version>`. The publish workflow
-tests, builds, smoke-tests the bins, and publishes
-`@critical-labs/agent-identity` with provenance. One-time setup: create the
-`critical-labs` npm org and add an automation token as the `NPM_TOKEN`
-repository secret.
+tests, builds, smoke-tests the bins, and **stages**
+`@critical-labs/agent-identity` on npm — the version is uploaded non-public
+and goes live only when a maintainer approves it on npmjs.com (or with
+`npm stage list @critical-labs/agent-identity` then
+`npm stage approve <stage-id> --otp <code>`). The `NPM_TOKEN` repository
+secret is a granular **stage-only** token (rotate before it expires; the
+current one expires 2026-12-21), so a leaked token can never push a version
+live without a 2FA'd human approval.
 
 ## Security model
 
