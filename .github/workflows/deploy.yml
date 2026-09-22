@@ -39,6 +39,12 @@ jobs:
       id-token: write
       contents: read
     steps:
+      # Must run before any step that could print the domain; logs are world-readable.
+      - name: Mask mail domain in logs
+        env:
+          MAIL_DOMAIN: ${{ vars.MAIL_DOMAIN }}
+        run: |
+          if [ -n "$MAIL_DOMAIN" ]; then echo "::add-mask::$MAIL_DOMAIN"; fi
       - name: Check required repository variables
         env:
           MAIL_DOMAIN: ${{ vars.MAIL_DOMAIN }}
@@ -68,11 +74,17 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
       - name: CDK deploy
         working-directory: infra
-        run: >
-          pnpm exec cdk deploy --require-approval never
-          -c domain=${{ vars.MAIL_DOMAIN }}
-          -c githubForkOwner=${{ vars.FORGE_GITHUB_FORK_OWNER }}
-          --outputs-file outputs.json
+        env:
+          # infra/bin/app.ts falls back to MAIL_DOMAIN; env keeps it off the logged argv
+          MAIL_DOMAIN: ${{ vars.MAIL_DOMAIN }}
+        run: |
+          set -euo pipefail
+          # Outputs go to outputs.json only; sed drops the "Outputs:" block from the
+          # public log (ApiUrl, MxRecord, TableName). pipefail preserves cdk's exit code.
+          pnpm exec cdk deploy --require-approval never --no-color \
+            -c githubForkOwner=${{ vars.FORGE_GITHUB_FORK_OWNER }} \
+            --outputs-file outputs.json 2>&1 \
+            | sed '/^Outputs:$/,/^Stack ARN:$/{/^Stack ARN:$/!d;}'
       - name: Activate SES receipt rule set
         working-directory: infra
         run: |
@@ -80,27 +92,19 @@ jobs:
           aws ses set-active-receipt-rule-set --rule-set-name "$RULE_SET"
           echo "Activated receipt rule set: $RULE_SET"
       - name: Write job summary
-        working-directory: infra
-        env:
-          MAIL_DOMAIN: ${{ vars.MAIL_DOMAIN }}
+        # Summaries are world-readable here and NOT covered by ::add-mask:: — never
+        # embed ApiUrl/MxRecord/TableName or the domain. Quoted heredoc: no expansion.
         run: |
-          API_URL=$(jq -r 'to_entries[0].value.ApiUrl' outputs.json)
-          MX_RECORD=$(jq -r 'to_entries[0].value.MxRecord' outputs.json)
-          TABLE_NAME=$(jq -r 'to_entries[0].value.TableName' outputs.json)
-          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
           ## Deployed
 
-          | Output | Value |
-          |---|---|
-          | ApiUrl | $API_URL |
-          | MxRecord | \`$MX_RECORD\` |
-          | TableName | $TABLE_NAME |
+          Stack outputs (ApiUrl, MxRecord, TableName) are deliberately not published on this public repo. Read them with: `aws cloudformation describe-stacks --stack-name AgentIdentity --query 'Stacks[0].Outputs'`
 
           ### Remaining manual steps
 
-          1. Publish the MX record above in your DNS provider.
-          2. If not already done, verify the SES domain identity and add its DKIM records: \`aws sesv2 create-email-identity --email-identity $MAIL_DOMAIN\`
-          3. Mint a fleet key: \`AGENT_IDENTITY_TABLE=$TABLE_NAME npx tsx packages/admin/src/mailctl.ts fleet-key create --label <label>\`
-          4. Store the shared GitHub PAT (proxy): a classic token owned by the bot account with \`repo\` scope (needed to fork + push to private forks) — it should be able to fork sources and write to the bot's OWN forks, never to source repos. \`aws ssm put-parameter --name /agent-identity/forge/github/pat --type SecureString --value <PAT>\`. Then set the repository variable \`FORGE_GITHUB_FORK_OWNER\` to the bot account login (Settings > Secrets and variables > Actions > Variables — the name cannot start with GITHUB_) and re-run this deploy — GitHub commits are denied until it is set.
-          5. For GitLab provisioning: \`aws ssm put-parameter --name /agent-identity/forge/gitlab/admin-token --type SecureString --value <group-owner-token>\` and \`aws ssm put-parameter --name /agent-identity/forge/gitlab/group --type String --value <top-level-group-id>\`
+          1. Publish the MxRecord output in your DNS provider.
+          2. If not already done, verify the SES domain identity and add its DKIM records: `aws sesv2 create-email-identity --email-identity <MAIL_DOMAIN>`
+          3. Mint a fleet key: `AGENT_IDENTITY_TABLE=<TableName output> npx tsx packages/admin/src/mailctl.ts fleet-key create --label <label>`
+          4. Store the shared GitHub PAT (proxy): a classic token owned by the bot account with `repo` scope (needed to fork + push to private forks) — it should be able to fork sources and write to the bot's OWN forks, never to source repos. `aws ssm put-parameter --name /agent-identity/forge/github/pat --type SecureString --value <PAT>`. Then set the repository variable `FORGE_GITHUB_FORK_OWNER` to the bot account login (Settings > Secrets and variables > Actions > Variables — the name cannot start with GITHUB_) and re-run this deploy — GitHub commits are denied until it is set.
+          5. For GitLab provisioning: `aws ssm put-parameter --name /agent-identity/forge/gitlab/admin-token --type SecureString --value <group-owner-token>` and `aws ssm put-parameter --name /agent-identity/forge/gitlab/group --type String --value <top-level-group-id>`
           EOF
