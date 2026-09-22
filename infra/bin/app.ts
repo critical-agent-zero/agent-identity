@@ -7,7 +7,11 @@ if (!domain) throw new Error("Pass -c domain=mail.example.com or set MAIL_DOMAIN
 
 const rate = Number(app.node.tryGetContext("apiThrottleRate") ?? 25);
 const burst = Number(app.node.tryGetContext("apiThrottleBurst") ?? 50);
-if (!(rate > 0 && burst > 0)) throw new Error("apiThrottleRate/apiThrottleBurst must be positive");
+// Finite/integer checks matter: Infinity passes a bare >0 check but serializes
+// to null in the template, deploying unthrottled; burst is a CFN Integer.
+if (!(Number.isFinite(rate) && rate > 0 && Number.isInteger(burst) && burst > 0)) {
+  throw new Error("apiThrottleRate must be a positive number, apiThrottleBurst a positive integer");
+}
 
 new AgentIdentityStack(app, "AgentIdentity", {
   domain,
