@@ -76,4 +76,6 @@ github|gitlab`.
   and create each account human-assisted (see [GitHub onboarding
   flow](../README.md#github-onboarding-flow)).
 
-See the design specs under `docs/superpowers/specs/` for the full architecture.
+The original design specs live under [`docs/internal/`](internal/) —
+historical internal planning documents, possibly stale, kept for provenance.
+This document is the current adopter-facing description.
