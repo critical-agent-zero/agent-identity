@@ -40,7 +40,8 @@ export function mergeMcpJson(existing: string | undefined, opts: McpEntryOptions
   const servers = { ...(doc.mcpServers as Record<string, unknown> | undefined) };
   servers["agent-identity"] = {
     command: "npx",
-    args: ["agent-identity-mcp"],
+    // -p scope-qualifies: bare "agent-identity-mcp" is an unrelated third-party npm package
+    args: ["-y", "-p", "@critical-labs/agent-identity", "agent-identity-mcp"],
     env: {
       AGENT_IDENTITY_API_URL: opts.apiUrl,
       ...(opts.requireGithub ? { AGENT_IDENTITY_REQUIRE: "github" } : {}),
