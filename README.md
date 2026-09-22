@@ -2,13 +2,21 @@
 
 ## What this is
 
-agent-identity gives AI agents a persistent, verifiable identity whose first capability is a receive-only email mailbox backed by AWS SES. An agent's identity is an Ed25519 keypair generated client-side on first use and stored at `~/.config/agent-identity/<profile>.json`. Registration assigns a permanent random numeric ID; the mailbox address is `<id>@<domain>` — numbers only, no names. Identity and mailbox are born together and are immutable. The driving use case is GitHub onboarding: an agent needs an email address to create a GitHub account so it can author commits, open pull requests, and receive notifications. The project is open-source and self-hostable; the reference deployment is private, gated by a fleet key so only the operator's own agents may register.
+agent-identity gives AI agents a persistent, verifiable identity whose first capability is a receive-only email mailbox backed by AWS SES. An agent's identity is an Ed25519 keypair generated client-side on first use and stored at `~/.config/agent-identity/<profile>.json`. Registration assigns a permanent random numeric ID; the mailbox address is `<id>@<domain>` — numbers only, no names. Identity and mailbox are born together and are immutable. The driving use case is GitHub onboarding: an agent needs an email address to create a GitHub account so it can author commits, open pull requests, and receive notifications.
 
-## Quick start (consuming repo)
+**The product is and always will be self-hosted.** There is no shared service to sign up for. You either deploy your own AWS backend — an AI agent can walk you through it step by step; see **[infra/README.md](infra/README.md)** — or obtain an API URL and fleet key from an operator who already runs one. Every deployment is gated by a fleet key so only that operator's own agents may register.
+
+Two milestones set expectations. A **working identity with a mailbox** is a few hours of AWS and DNS setup: deploy the CDK stack, verify your domain in SES, add the DNS records, mint a fleet key. A **GitHub-capable identity** additionally needs a human — GitHub's signup form and CAPTCHA (or verifying a bot account's email), operator tagging of the identity — and a decision about who holds the resulting Personal Access Token.
+
+The rest of this README splits into the **[Adopter path](#adopter-path)** — install the package, run the setup wizard, use the MCP tools and session claiming — and the **[Operator path](#operator-path)** — deploy and run the AWS backend, administer the fleet, hold forge credentials, CI/CD.
+
+## Adopter path
+
+### Install and set up
 
 ```bash
 npm install @critical-labs/agent-identity
-npx agent-identity setup
+npx -y -p @critical-labs/agent-identity agent-identity setup
 ```
 
 The setup wizard connects you to an existing deployment (API URL + fleet
@@ -28,24 +36,32 @@ Manual MCP configuration (what the wizard writes):
   "mcpServers": {
     "agent-identity": {
       "command": "npx",
-      "args": ["agent-identity-mcp"],
+      "args": ["-y", "-p", "@critical-labs/agent-identity", "agent-identity-mcp"],
       "env": { "AGENT_IDENTITY_API_URL": "https://<api-id>.execute-api.<region>.amazonaws.com" }
     }
   }
 }
 ```
 
-Other CLI commands: `npx agent-identity pool provision --count N` (mint
-identities into the machine-local pool), `npx agent-identity pool status`,
-`npx agent-identity github link <agentId> --username <login>`.
+The repo ships this shape as [`.mcp.json.example`](.mcp.json.example);
+`agent-identity setup` generates the real `.mcp.json`, which is gitignored
+because it points at your deployment.
+
+Other CLI commands:
+`npx -y -p @critical-labs/agent-identity agent-identity pool provision --count N` (mint
+identities into the machine-local pool),
+`npx -y -p @critical-labs/agent-identity agent-identity pool status`, and
+`npx -y -p @critical-labs/agent-identity agent-identity github link <agentId> --username <login>`.
+
+### MCP tools
 
 Call `ensure_identity` at the start of every session — it claims an identity from the local pool (creating one if the pool is empty), registers with the server (idempotent), and returns your `agentId` and `address`. The other tools are `list_emails` (returns summaries with id, from, subject, receivedAt), `get_email` (returns full text body and extracted links for a given id), `wait_for_email` (polls until a matching message arrives; when the timeout elapses it returns `{timedOut: true}` as a clean result, not an error), and `identity_status` (shows what this session holds and what is free in the pool). Following links in retrieved emails is the agent's own job — the server does not fetch URLs.
 
-## Session identity claiming
+### Session identity claiming
 
 Each MCP server process claims one identity from a machine-local pool at startup and holds it for its lifetime. Concurrent sessions get distinct identities; identities are reused across sessions rather than re-created.
 
-### Pool layout
+#### Pool layout
 
 ```
 ~/.config/agent-identity/
@@ -55,24 +71,24 @@ Each MCP server process claims one identity from a machine-local pool at startup
 
 Profiles outside `pool/` (e.g. `default.json`) are never claimed.
 
-### Requiring a GitHub-capable identity
+#### Requiring a GitHub-capable identity
 
 Set `AGENT_IDENTITY_REQUIRE=github` in the MCP server's env (e.g. in `.mcp.json`). The agent can also call `ensure_identity` with `{"require": ["github"]}` to swap mid-session. If no GitHub-capable identity is free, the claim fails with remediation instructions — it is never auto-created. A plain identity IS auto-created (and added to the pool) when the pool is exhausted, using `AGENT_IDENTITY_FLEET_KEY`.
 
 Use the `identity_status` tool to see what is held and what is free.
 
-### Onboarding a GitHub-capable identity
+#### Onboarding a GitHub-capable identity
 
 1. A session claims/mints a plain identity, e.g. `482913@<domain>`.
 2. A human creates the GitHub account with that address (form + CAPTCHA); the agent fetches the verification email via `wait_for_email`.
 3. `mailctl agent tag 482913 github`
-4. `agent-identity github link 482913 --username <gh-login> [--credential-ref op://...]`
+4. `npx -y -p @critical-labs/agent-identity agent-identity github link 482913 --username <gh-login> [--credential-ref op://...]`
 
-### Stuck locks
+#### Stuck locks
 
 A crashed holder's lock is reclaimed automatically (dead-PID detection). After a reboot, PID reuse can rarely leave a stale lock that looks live: delete the file in `~/.config/agent-identity/claims/` by hand.
 
-### Optional SessionStart hook
+#### Optional SessionStart hook
 
 Claiming needs no hook. To surface the identity to the agent at session start, add to `.claude/settings.json`:
 
@@ -81,43 +97,50 @@ Claiming needs no hook. To surface the identity to the agent at session start, a
   "command": "echo 'agent-identity MCP is available; call ensure_identity before workflows needing email.'" }] }] } }
 ```
 
-## Deploy (operator)
+### GitHub onboarding flow
 
-SES inbound email is only available in **us-east-1**, **us-west-2**, and **eu-west-1**. Deploy your stack into one of those regions.
+GitHub blocks automated signups — their Terms of Service require human account creation and a CAPTCHA enforces it. The flow is therefore human-assisted at exactly one step:
 
-1. Install dependencies:
-   ```bash
-   pnpm install
-   ```
+1. The agent calls `ensure_identity` and receives its permanent address, for example `482913@mail.example.com`.
+2. The agent asks its human to complete the GitHub signup form using that address. The human handles ToS acceptance and the CAPTCHA — this is the one step that cannot be automated.
+3. GitHub sends a verification email to the agent's mailbox. The agent calls `wait_for_email` (with `subjectContains` matching GitHub's subject line), then `get_email` to retrieve the full message and surface the verification link. The agent or human follows the link to confirm the account.
+4. The account is live. The agent's human configures credentials or a Personal Access Token as they see fit. Ongoing GitHub notification email flows to the agent's mailbox and is readable via `list_emails` / `get_email`.
 
-2. Deploy the CDK stack, substituting your domain name:
-   ```bash
-   cd infra && npx cdk deploy -c domain=mail.example.com
-   ```
-   The stack outputs the API URL, the MX record value, and the SES domain verification records. Note the `MxRecord` output.
+### Forge access (code, commits, PRs)
+
+Once an identity has a forge account, it acts on code through a credential-holding **proxy** on the same signed API — it forks a source repo, commits to its own fork, and opens PRs/MRs back, never writing to the source (enforced by both credential scope and a deterministic policy). GitLab-capable identities can **self-onboard end to end** (a service account whose email is the agent's own mailbox, so it receives and confirms its own signup with no human step), while GitHub accounts stay human-assisted as above. See **[Forge access — the code-forge proxy](docs/forge-access.md)** for the approach and why GitLab fits agents better than GitHub.
+
+## Operator path
+
+### Deploy
+
+**[infra/README.md](infra/README.md)** is the complete step-by-step deploy guide — prerequisites, CDK bootstrap and deploy, SES/DNS records, receipt-rule activation, fleet-key minting, cost expectations, troubleshooting — written so an AI agent can drive a human through it. The short version:
+
+SES inbound email is only available in **us-east-1**, **us-west-2**, and **eu-west-1**; deploy into one of those regions.
+
+1. `pnpm install`, then `cd infra && npx cdk deploy -c domain=mail.example.com`. The stack outputs the API URL, the MX record value, the receipt rule set name, and the table name.
 
    The API is rate-limited by default (25 req/s steady, 50 burst, across all routes) so a discovered endpoint can't run up your Lambda/DynamoDB bill. Tune with `-c apiThrottleRate=N -c apiThrottleBurst=N` if your fleet needs more headroom.
 
-3. Verify your domain in SES and add DNS records. Create the SES email identity for your domain:
-   ```bash
-   aws sesv2 create-email-identity --email-identity mail.example.com
-   ```
-   Then add the DKIM CNAME records and the domain verification TXT record that the SES console (or the above command's output) provides. Add an MX record for your domain pointing to the value from the stack's `MxRecord` output.
+2. Verify your domain in SES (`aws sesv2 create-email-identity`, then the DKIM CNAMEs and verification TXT record) and add the MX record from the stack's `MxRecord` output.
 
-4. Activate the SES receipt rule set. CDK creates the rule set but does not activate it — you must do this manually:
+3. Activate the SES receipt rule set — CDK creates it but does not activate it:
    ```bash
    aws ses set-active-receipt-rule-set --rule-set-name <ReceiptRuleSetName from stack output>
    ```
+   **Warning:** this REPLACES the account's currently active rule set. If the account already receives mail through SES, merge this stack's rule into the existing active set instead of switching sets — see [infra/README.md](infra/README.md#4-activate-the-receipt-rule-set). SES sandbox status does not affect receiving; no production-access request is needed for this stack.
 
-5. Mint a fleet key so agents can register:
+4. Mint a fleet key so agents can register:
    ```bash
    AGENT_IDENTITY_TABLE=<TableName output> npx tsx packages/admin/src/mailctl.ts fleet-key create --label <label>
    ```
    Give the resulting key to agents via the `AGENT_IDENTITY_FLEET_KEY` environment variable.
 
-Other admin operations (listing agents, revoking an identity) use the same `mailctl` CLI with operator AWS credentials directly against DynamoDB. There is no admin HTTP API.
+### Fleet administration
 
-## CI/CD (GitHub Actions)
+Admin operations — listing agents, tagging capabilities (`mailctl agent tag <id> github|gitlab`), revoking an identity, minting fleet keys — use the `mailctl` CLI with operator AWS credentials directly against DynamoDB. There is no admin HTTP API. Forge credentials (a GitLab group Owner token, a GitHub fork-namespace PAT) are held server-side in SSM, never by agents — see [docs/forge-access.md](docs/forge-access.md) for operator setup.
+
+### CI/CD (GitHub Actions)
 
 `.github/workflows/deploy.yml` tests and deploys the stack on every push to `main`, or on demand from the Actions tab (`workflow_dispatch`). Deploys authenticate to AWS via GitHub OIDC — no long-lived AWS keys are stored in GitHub.
 
@@ -144,7 +167,7 @@ One-time setup (run in CloudShell, or any shell with admin credentials, in your 
    - `AWS_REGION` — e.g. `us-east-1`
    - `AWS_DEPLOY_ROLE_ARN` — the `DeployRoleArn` output from step 2
 
-5. Run the **deploy** workflow from the Actions tab. The job summary lists the stack outputs and the remaining manual steps (DNS MX record, SES domain verification, fleet key). The workflow activates the SES receipt rule set automatically.
+5. Run the **deploy** workflow from the Actions tab. The job summary lists the stack outputs and the remaining manual steps (DNS MX record, SES domain verification, fleet key). The workflow activates the SES receipt rule set automatically — the same caveat applies: activation replaces the account's active rule set, so if the account already receives mail via SES, merge rules instead (see [infra/README.md](infra/README.md#4-activate-the-receipt-rule-set)).
 
 If the deploy job fails at `configure-aws-credentials`, the usual cause is a trust-policy mismatch: the role only trusts `repo:critical-labs/agent-identity:environment:production`, so the environment name and repository must match exactly.
 
@@ -156,19 +179,6 @@ tests, builds, smoke-tests the bins, and publishes
 `@critical-labs/agent-identity` with provenance. One-time setup: create the
 `critical-labs` npm org and add an automation token as the `NPM_TOKEN`
 repository secret.
-
-## GitHub onboarding flow
-
-GitHub blocks automated signups — their Terms of Service require human account creation and a CAPTCHA enforces it. The flow is therefore human-assisted at exactly one step:
-
-1. The agent calls `ensure_identity` and receives its permanent address, for example `482913@mail.example.com`.
-2. The agent asks its human to complete the GitHub signup form using that address. The human handles ToS acceptance and the CAPTCHA — this is the one step that cannot be automated.
-3. GitHub sends a verification email to the agent's mailbox. The agent calls `wait_for_email` (with `subjectContains` matching GitHub's subject line), then `get_email` to retrieve the full message and surface the verification link. The agent or human follows the link to confirm the account.
-4. The account is live. The agent's human configures credentials or a Personal Access Token as they see fit. Ongoing GitHub notification email flows to the agent's mailbox and is readable via `list_emails` / `get_email`.
-
-## Forge access (code, commits, PRs)
-
-Once an identity has a forge account, it acts on code through a credential-holding **proxy** on the same signed API — it forks a source repo, commits to its own fork, and opens PRs/MRs back, never writing to the source (enforced by both credential scope and a deterministic policy). GitLab-capable identities can **self-onboard end to end** (a service account whose email is the agent's own mailbox, so it receives and confirms its own signup with no human step), while GitHub accounts stay human-assisted as above. See **[Forge access — the code-forge proxy](docs/forge-access.md)** for the approach and why GitLab fits agents better than GitHub.
 
 ## Security model
 
