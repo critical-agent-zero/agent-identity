@@ -57,6 +57,38 @@ describe("mcp tools", () => {
     const res = await tools.waitForEmail({ subjectContains: "never", timeoutSeconds: 0.05 }, { pollMs: 10 });
     expect(res).toEqual({ timedOut: true });
   });
+
+  it("wait_for_email absorbs a transient error and keeps polling", async () => {
+    const listEmails = vi.fn()
+      .mockRejectedValueOnce(new Error("API 429: throttled"))
+      .mockResolvedValue({ emails: [{ id: "9", from: "noreply@github.com", subject: "hi", receivedAt: "t" }] });
+    const tools = makeTools(makeManager(makeClient({ listEmails })));
+    const res = await tools.waitForEmail(
+      { fromContains: "github", timeoutSeconds: 1 }, { pollMs: 1, sleep: async () => {} },
+    );
+    expect(res).toEqual(expect.objectContaining({ id: "9" }));
+    expect(listEmails.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("wait_for_email surfaces a persistent failure as a clean error result", async () => {
+    const listEmails = vi.fn(async () => { throw new Error("API 429: throttled"); });
+    const tools = makeTools(makeManager(makeClient({ listEmails })));
+    const res = await tools.waitForEmail(
+      { subjectContains: "never", timeoutSeconds: 0.05 }, { pollMs: 10, sleep: async () => {} },
+    );
+    expect(res).toEqual({ error: "API 429: throttled" });
+  });
+
+  it("wait_for_email reports timedOut when a poll succeeds after an earlier error", async () => {
+    const listEmails = vi.fn()
+      .mockRejectedValueOnce(new Error("API 500: hiccup"))
+      .mockResolvedValue({ emails: [] });
+    const tools = makeTools(makeManager(makeClient({ listEmails })));
+    const res = await tools.waitForEmail(
+      { subjectContains: "never", timeoutSeconds: 0.05 }, { pollMs: 10, sleep: async () => {} },
+    );
+    expect(res).toEqual({ timedOut: true });
+  });
 });
 
 describe("forge tools", () => {

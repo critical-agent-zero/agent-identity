@@ -68,6 +68,36 @@ export interface OnboardDeps {
 
 const sleepDefault = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// Sender authenticity: the display name is attacker-controlled, so only the
+// domain of the address part counts. github.com and its subdomains are
+// accepted (GitHub sends from noreply@github.com today; a mail subdomain like
+// mail.github.com stays under GitHub's DNS control, so it is equally trusted).
+function isGithubSender(from: string): boolean {
+  const angled = /<([^<>]*)>\s*$/.exec(from);
+  const addr = (angled ? angled[1]! : from).trim();
+  const at = addr.lastIndexOf("@");
+  if (at < 0) return false;
+  const domain = addr.slice(at + 1).toLowerCase();
+  return domain === "github.com" || domain.endsWith(".github.com");
+}
+
+// Link authenticity: the operator opens this link signed in as the bot
+// account, so it must parse and its origin must be exactly https://github.com
+// — no lookalike hosts, no http downgrade. Raw C0/C1/DEL bytes are rejected
+// outright: new URL() accepts them in a path while still reporting the
+// github.com origin, but printed to a terminal they are ANSI escapes that can
+// rewrite the displayed line into an attacker URL (ingest decodes &#27;
+// entities into real ESC bytes). No legitimate GitHub link carries them.
+function isGithubVerificationLink(link: string): boolean {
+  if (!link.includes("confirm_verification")) return false;
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(link)) return false;
+  try {
+    return new URL(link).origin === "https://github.com";
+  } catch {
+    return false;
+  }
+}
+
 /** Add the address to the bot account (if needed) and return the pending
  *  verification link from the agent's mailbox. The verification click itself is
  *  deliberately NOT automated here — it must be completed in a browser signed
@@ -94,13 +124,15 @@ export async function onboardGithubEmail(deps: OnboardDeps): Promise<OnboardResu
   const deadline = now() + timeoutMs;
   for (;;) {
     const { emails } = await deps.mailbox.listEmails({ limit: 20 });
-    const vmail = emails.find((e) => e.from.toLowerCase().includes("github") && /verif/i.test(e.subject));
+    const vmail = emails.find((e) => isGithubSender(e.from) && /verif/i.test(e.subject));
     if (vmail) {
       const full = await deps.mailbox.getEmail(vmail.id);
       // GitHub's verification links carry a /confirm_verification/ path segment;
       // format-dependent, so a change here degrades to no-verification-email.
-      const link = (full.links ?? []).find((l) => l.includes("confirm_verification"));
-      if (link) return { address: deps.address, login, status: "pending", verificationLink: link };
+      const link = (full.links ?? []).find(isGithubVerificationLink);
+      // Return the WHATWG-serialized form (percent-encodes anything unusual)
+      // so the string callers display is exactly the string that was validated.
+      if (link) return { address: deps.address, login, status: "pending", verificationLink: new URL(link).href };
     }
     if (now() >= deadline) return { address: deps.address, login, status: "no-verification-email" };
     await sleep(Math.min(pollMs, Math.max(0, deadline - now())));

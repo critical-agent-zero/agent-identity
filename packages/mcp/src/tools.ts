@@ -28,9 +28,10 @@ export function makeTools(manager: ClaimManager) {
     },
 
     async waitForEmail(
-      args: WaitArgs, opts: { pollMs?: number } = {},
-    ): Promise<EmailSummary | { timedOut: true }> {
+      args: WaitArgs, opts: { pollMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+    ): Promise<EmailSummary | { timedOut: true } | { error: string }> {
       const pollMs = opts.pollMs ?? 5000;
+      const doSleep = opts.sleep ?? sleep;
       const deadline = Date.now() + args.timeoutSeconds * 1000;
       // 15-minute lookback: the email often arrives before polling starts,
       // e.g. while a human finishes a signup form the agent asked them to fill.
@@ -38,12 +39,23 @@ export function makeTools(manager: ClaimManager) {
       const matches = (e: EmailSummary) =>
         (!args.fromContains || e.from.toLowerCase().includes(args.fromContains.toLowerCase())) &&
         (!args.subjectContains || e.subject.toLowerCase().includes(args.subjectContains.toLowerCase()));
+      // Transient failures (esp. shared-bucket 429s) must not abort a long
+      // wait — absorb and retry on the next tick. Only a failure on the last
+      // attempt surfaces, as a clean {error} result in the forge-tool style.
+      let lastError: Error | undefined;
       for (;;) {
-        const { emails } = await manager.client().listEmails({ since, limit: 50 });
-        const hit = emails.find(matches);
-        if (hit) return hit;
-        if (Date.now() >= deadline) return { timedOut: true };
-        await sleep(Math.min(pollMs, Math.max(0, deadline - Date.now())));
+        try {
+          const { emails } = await manager.client().listEmails({ since, limit: 50 });
+          const hit = emails.find(matches);
+          if (hit) return hit;
+          lastError = undefined;
+        } catch (err) {
+          lastError = err as Error;
+        }
+        if (Date.now() >= deadline) {
+          return lastError ? { error: lastError.message } : { timedOut: true };
+        }
+        await doSleep(Math.min(pollMs, Math.max(0, deadline - Date.now())));
       }
     },
 
