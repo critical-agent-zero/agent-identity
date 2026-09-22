@@ -1,13 +1,26 @@
 import type { AgentsRepo, EmailsRepo } from "@agent-identity/api";
-import type { SESEventRecord } from "aws-lambda";
+import type { AuthVerdictStatus, EmailAuthVerdicts } from "@agent-identity/shared";
+import type { SESEventRecord, SESReceipt } from "aws-lambda";
 import { parseEmail } from "./parse.js";
 
 export interface IngestDeps {
   getRaw: (s3Key: string) => Promise<Buffer>;
   putBodyOverflow: (agentId: string, emailId: string, body: object) => Promise<string>;
+  quarantineRaw: (messageId: string) => Promise<void>;
   agents: Pick<AgentsRepo, "getByLocalPart">;
   emails: Pick<EmailsRepo, "putEmail">;
   maxInlineBodyBytes: number;
+}
+
+// Missing verdicts (scanning disabled by a self-hoster) yield undefined, never a guess.
+function captureAuth(receipt: SESReceipt): EmailAuthVerdicts | undefined {
+  const auth: EmailAuthVerdicts = {};
+  if (receipt.spfVerdict?.status) auth.spf = receipt.spfVerdict.status as AuthVerdictStatus;
+  if (receipt.dkimVerdict?.status) auth.dkim = receipt.dkimVerdict.status as AuthVerdictStatus;
+  if (receipt.dmarcVerdict?.status) auth.dmarc = receipt.dmarcVerdict.status as AuthVerdictStatus;
+  if (receipt.spamVerdict?.status) auth.spam = receipt.spamVerdict.status as AuthVerdictStatus;
+  if (receipt.virusVerdict?.status) auth.virus = receipt.virusVerdict.status as AuthVerdictStatus;
+  return Object.keys(auth).length ? auth : undefined;
 }
 
 export async function processRecord(record: SESEventRecord, deps: IngestDeps): Promise<void> {
@@ -15,6 +28,14 @@ export async function processRecord(record: SESEventRecord, deps: IngestDeps): P
   // Fail-open by design: only a positive FAIL verdict drops mail. Missing verdicts
   // (scanning disabled by a self-hoster) and GRAY/PROCESSING_FAILED are let through.
   if (receipt.spamVerdict?.status === "FAIL" || receipt.virusVerdict?.status === "FAIL") return;
+
+  // Authentication hard-fail: quarantine to unmatched/ (7-day lifecycle), never
+  // the mailbox — agents read mailboxes programmatically (prompt-injection vector).
+  const auth = captureAuth(receipt);
+  if (auth?.dmarc === "FAIL" || (auth?.spf === "FAIL" && auth?.dkim === "FAIL")) {
+    await deps.quarantineRaw(mail.messageId);
+    return;
+  }
 
   const rawS3Key = `raw/${mail.messageId}`;
   let parsed: Awaited<ReturnType<typeof parseEmail>> | undefined;
@@ -30,6 +51,7 @@ export async function processRecord(record: SESEventRecord, deps: IngestDeps): P
       messageId: mail.messageId,
       from: parsed.from, subject: parsed.subject,
       receivedAt: mail.timestamp, links: parsed.links, rawS3Key,
+      ...(auth ? { auth } : {}),
     };
     if (bodySize > deps.maxInlineBodyBytes) {
       const bodyS3Key = await deps.putBodyOverflow(agent.agentId, mail.messageId, {
@@ -46,7 +68,7 @@ export async function processRecord(record: SESEventRecord, deps: IngestDeps): P
 
 // ---- Lambda wiring ----
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { CopyObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { AgentsRepo as AgentsRepoImpl, EmailsRepo as EmailsRepoImpl } from "@agent-identity/api";
 import type { SESEvent } from "aws-lambda";
@@ -69,6 +91,14 @@ export function makeLambdaDeps(): IngestDeps {
         ContentType: "application/json",
       }));
       return key;
+    },
+    quarantineRaw: async (messageId) => {
+      // Copy, don't move: raw/ keeps the retention-lifecycle original for forensics.
+      await s3.send(new CopyObjectCommand({
+        Bucket: bucket,
+        Key: `unmatched/${messageId}`,
+        CopySource: `${bucket}/raw/${encodeURIComponent(messageId)}`,
+      }));
     },
     agents: new AgentsRepoImpl(ddb, table, domain),
     emails: new EmailsRepoImpl(ddb, table, Number(process.env.RETENTION_DAYS ?? "90")),

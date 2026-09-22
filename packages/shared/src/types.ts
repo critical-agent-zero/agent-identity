@@ -3,11 +3,24 @@ export interface AgentIdentity {
   address: string;        // "482913@mail.example.com"
 }
 
+export type AuthVerdictStatus = "PASS" | "FAIL" | "GRAY" | "PROCESSING_FAILED";
+
+// SES receipt verdicts captured at ingest. Records stored before capture
+// lack the field entirely — every reader must tolerate undefined.
+export interface EmailAuthVerdicts {
+  spf?: AuthVerdictStatus;
+  dkim?: AuthVerdictStatus;
+  dmarc?: AuthVerdictStatus;
+  spam?: AuthVerdictStatus;
+  virus?: AuthVerdictStatus;
+}
+
 export interface EmailSummary {
   id: string;             // ULID
   from: string;
   subject: string;
   receivedAt: string;     // ISO
+  auth?: EmailAuthVerdicts;
 }
 
 export interface EmailFull extends EmailSummary {
