@@ -1,6 +1,7 @@
 {
   "name": "@agent-identity/ingest",
   "version": "0.1.0",
+  "private": true,
   "type": "module",
   "exports": { ".": "./src/handler.ts" },
   "dependencies": {

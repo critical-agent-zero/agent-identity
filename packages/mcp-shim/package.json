@@ -1,0 +1,19 @@
+{
+  "name": "@critical-labs/agent-identity-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for agent-identity — single-bin wrapper for npx",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/critical-labs/agent-identity.git",
+    "directory": "packages/mcp-shim"
+  },
+  "type": "module",
+  "bin": { "agent-identity-mcp": "./bin.js" },
+  "files": ["bin.js", "README.md"],
+  "engines": { "node": ">=20" },
+  "publishConfig": { "access": "public" },
+  "dependencies": {
+    "@critical-labs/agent-identity": "^0.1.0"
+  }
+}
