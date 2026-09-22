@@ -162,12 +162,12 @@ One-time setup (run in CloudShell, or any shell with admin credentials, in your 
 
 3. In repo **Settings → Environments**, create an environment named `production` (optionally require reviewers to gate deploys).
 
-4. In repo **Settings → Secrets and variables → Actions → Variables**, set:
-   - `MAIL_DOMAIN` — the mail domain, e.g. `mail.example.com`
-   - `AWS_REGION` — e.g. `us-east-1`
-   - `AWS_DEPLOY_ROLE_ARN` — the `DeployRoleArn` output from step 2
+4. In repo **Settings → Secrets and variables → Actions**, set:
+   - Under **Secrets**: `MAIL_DOMAIN` — the mail domain, e.g. `mail.example.com` (a secret, not a variable, so the public workflow logs mask it)
+   - Under **Variables**: `AWS_REGION` — e.g. `us-east-1`
+   - Under **Variables**: `AWS_DEPLOY_ROLE_ARN` — the `DeployRoleArn` output from step 2
 
-5. Run the **deploy** workflow from the Actions tab. The job summary lists the stack outputs and the remaining manual steps (DNS MX record, SES domain verification, fleet key). The workflow activates the SES receipt rule set automatically — the same caveat applies: activation replaces the account's active rule set, so if the account already receives mail via SES, merge rules instead (see [infra/README.md](infra/README.md#4-activate-the-receipt-rule-set)).
+5. Run the **deploy** workflow from the Actions tab. The job summary lists the remaining manual steps (DNS MX record, SES domain verification, fleet key); stack outputs are not published on this public repo — read them with `aws cloudformation describe-stacks --stack-name AgentIdentity --query 'Stacks[0].Outputs'`. The workflow activates the SES receipt rule set automatically — the same caveat applies: activation replaces the account's active rule set, so if the account already receives mail via SES, merge rules instead (see [infra/README.md](infra/README.md#4-activate-the-receipt-rule-set)).
 
 If the deploy job fails at `configure-aws-credentials`, the usual cause is a trust-policy mismatch: the role only trusts `repo:critical-labs/agent-identity:environment:production`, so the environment name and repository must match exactly.
 
