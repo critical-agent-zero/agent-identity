@@ -4,4 +4,5 @@ cdk.out/
 *.tsbuildinfo
 .env
 .claude/
+.mcp.json
 packages/dist/dist/
