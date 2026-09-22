@@ -152,6 +152,38 @@ describe("onboardGithubEmail", () => {
     expect(r.verificationLink).toBeUndefined();
   });
 
+  it("rejects a github.com link carrying ANSI-escape control bytes (terminal-rewrite spoof)", async () => {
+    // ESC[2K erases the line, ESC[1G returns to column 1 — a terminal renders
+    // only the trailing attacker URL while new URL().origin still reports
+    // https://github.com. Decoded from &#27; entities by ingest extractLinks().
+    const spoofed =
+      "https://github.com/users/critical-agent-zero/emails/1/confirm_verification/x\u001b[2K\u001b[1G  https://evil.example/confirm_verification/steal";
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi(), mailbox: fakeMailbox([verifyEmail], [spoofed]), ...fast,
+    });
+    expect(r.status).toBe("no-verification-email");
+    expect(r.verificationLink).toBeUndefined();
+  });
+
+  it("rejects github.com links carrying other C0/C1/DEL control bytes", async () => {
+    const base = "https://github.com/users/critical-agent-zero/emails/1/confirm_verification/";
+    for (const ctl of ["\u0000", "\u0008", "\u007f", "\u009b"]) {
+      const r = await onboardGithubEmail({
+        address: ADDR, api: fakeApi(), mailbox: fakeMailbox([verifyEmail], [`${base}a${ctl}b`]), ...fast,
+      });
+      expect(r.status).toBe("no-verification-email");
+    }
+  });
+
+  it("returns the WHATWG-serialized link so the validated string is the displayed string", async () => {
+    const odd = "https://github.com/users/critical-agent-zero/emails/1/confirm_verification/a b";
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi(), mailbox: fakeMailbox([verifyEmail], [odd]), ...fast,
+    });
+    expect(r.status).toBe("pending");
+    expect(r.verificationLink).toBe("https://github.com/users/critical-agent-zero/emails/1/confirm_verification/a%20b");
+  });
+
   it("skips unparseable and off-origin links but returns the legit one", async () => {
     const r = await onboardGithubEmail({
       address: ADDR, api: fakeApi(), mailbox: fakeMailbox([verifyEmail], [

@@ -83,9 +83,14 @@ function isGithubSender(from: string): boolean {
 
 // Link authenticity: the operator opens this link signed in as the bot
 // account, so it must parse and its origin must be exactly https://github.com
-// — no lookalike hosts, no http downgrade.
+// — no lookalike hosts, no http downgrade. Raw C0/C1/DEL bytes are rejected
+// outright: new URL() accepts them in a path while still reporting the
+// github.com origin, but printed to a terminal they are ANSI escapes that can
+// rewrite the displayed line into an attacker URL (ingest decodes &#27;
+// entities into real ESC bytes). No legitimate GitHub link carries them.
 function isGithubVerificationLink(link: string): boolean {
   if (!link.includes("confirm_verification")) return false;
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(link)) return false;
   try {
     return new URL(link).origin === "https://github.com";
   } catch {
@@ -125,7 +130,9 @@ export async function onboardGithubEmail(deps: OnboardDeps): Promise<OnboardResu
       // GitHub's verification links carry a /confirm_verification/ path segment;
       // format-dependent, so a change here degrades to no-verification-email.
       const link = (full.links ?? []).find(isGithubVerificationLink);
-      if (link) return { address: deps.address, login, status: "pending", verificationLink: link };
+      // Return the WHATWG-serialized form (percent-encodes anything unusual)
+      // so the string callers display is exactly the string that was validated.
+      if (link) return { address: deps.address, login, status: "pending", verificationLink: new URL(link).href };
     }
     if (now() >= deadline) return { address: deps.address, login, status: "no-verification-email" };
     await sleep(Math.min(pollMs, Math.max(0, deadline - now())));
