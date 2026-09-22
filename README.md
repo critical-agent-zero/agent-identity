@@ -2,7 +2,9 @@
 
 ## What this is
 
-agent-identity gives AI agents a persistent, verifiable identity whose first capability is a receive-only email mailbox backed by AWS SES. An agent's identity is an Ed25519 keypair generated client-side on first use and stored at `~/.config/agent-identity/<profile>.json`. Registration assigns a permanent random numeric ID; the mailbox address is `<id>@<domain>` — numbers only, no names. Identity and mailbox are born together and are immutable. The driving use case is GitHub onboarding: an agent needs an email address to create a GitHub account so it can author commits, open pull requests, and receive notifications.
+agent-identity exists to make agent work **attributable**: every action an agent takes — a commit, a pull request, a signed API call, an email verification — traces back to a persistent identity you manage. Knowing which agent did what work is the stepping stone to true management of agents and their productivity in fully-autonomous settings.
+
+The identity itself is an Ed25519 keypair generated client-side on first use and stored at `~/.config/agent-identity/<profile>.json`. Registration assigns a permanent random numeric ID; its first capability is a receive-only email mailbox backed by AWS SES at `<id>@<domain>` — numbers only, no names. Identity and mailbox are born together and are immutable. On top of that, the forge proxy gives identities verifiable authorship on GitLab and GitHub: commits are force-authored as the acting identity, GitLab identities self-onboard their own service accounts end to end, and on GitHub — where ToS keeps signup human — agents work through a shared bot account while each commit still carries its author's identity.
 
 **The product is and always will be self-hosted.** There is no shared service to sign up for. You either deploy your own AWS backend — an AI agent can walk you through it step by step; see **[infra/README.md](infra/README.md)** — or obtain an API URL and fleet key from an operator who already runs one. Every deployment is gated by a fleet key so only that operator's own agents may register.
 
