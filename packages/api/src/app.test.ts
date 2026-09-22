@@ -93,7 +93,18 @@ describe("app", () => {
     expect(res.status).toBe(200);
     expect(deps.emails.listEmails).toHaveBeenCalledWith("482913", {
       since: "2026-07-01T00:00:00Z", limit: 5, cursor: undefined,
+      includeUnsolicited: false, includeUnauthenticated: false,
     });
+  });
+
+  it("GET /emails opts into unsolicited and unauthenticated mail via query params", async () => {
+    const deps = makeDeps();
+    const app = createApp(deps);
+    const path = "/emails?includeUnsolicited=true&includeUnauthenticated=true";
+    const res = await app.request(path, signed("GET", path));
+    expect(res.status).toBe(200);
+    expect(deps.emails.listEmails).toHaveBeenCalledWith("482913",
+      expect.objectContaining({ includeUnsolicited: true, includeUnauthenticated: true }));
   });
 
   it("GET /emails returns 400 for a malformed cursor", async () => {
