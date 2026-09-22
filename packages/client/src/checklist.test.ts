@@ -117,6 +117,11 @@ describe("deployChecklist", () => {
     expect(deployChecklist("us-west-2")[3].instructions).toContain("us-west-2");
   });
 
+  it("pins the deploy region via AWS_REGION (the CDK CLI ignores exported CDK_DEFAULT_REGION)", () => {
+    expect(deployChecklist("us-west-2")[3].instructions)
+      .toMatch(/AWS_REGION=us-west-2 npx cdk deploy/);
+  });
+
   it("verifies the SES identity for the domain in the chosen region", async () => {
     let cmd: string[] = [];
     const d = deps({ run: async (bin, args) => { cmd = [bin, ...args]; return { ok: true, output: "{}" }; } });

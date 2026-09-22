@@ -87,7 +87,9 @@ export function deployChecklist(region: string): ChecklistStep[] {
       instructions:
         "From the cloned repo:\n" +
         `  npx aws-cdk@2 bootstrap aws://$(aws sts get-caller-identity --query Account --output text)/${region}\n` +
-        `  cd infra && CDK_DEFAULT_REGION=${region} npx cdk deploy -c domain=<your mail domain>\n` +
+        // AWS_REGION, not CDK_DEFAULT_REGION: the CDK CLI overwrites the latter from its own
+        // resolution (AWS_REGION -> profile -> IMDS), so only AWS_REGION pins the deploy region.
+        `  cd infra && AWS_REGION=${region} npx cdk deploy -c domain=<your mail domain>\n` +
         "Note the ApiUrl, MxRecord, TableName, and ReceiptRuleSetName outputs.",
       verify: async ({ run }) => {
         const r = await aws(run, ["cloudformation", "describe-stacks", "--stack-name", "AgentIdentity"]);
