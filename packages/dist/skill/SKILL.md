@@ -26,23 +26,51 @@ job — the server never fetches URLs.
 
 ## GitHub onboarding (human-assisted by design)
 
-GitHub blocks automated signups, so onboarding an account for an identity is
-a joint task:
+**Primary path: one shared bot account.** GitHub's Terms of Service allow
+one machine account per person — bulk per-agent signups get rejected or
+flagged. The forge proxy assumes a single shared bot account: commits are
+authored by the acting identity and pushed by the bot. Onboarding an
+identity then means verifying its mailbox on that account (see "GitHub
+commit attribution" below), not creating a new account.
+
+**Exception: a dedicated account for one identity.** Only when the human
+has decided to own the ToS question (e.g. this is their one permitted
+machine account). GitHub blocks automated signups, so it is a joint task:
 
 1. You (agent): call `ensure_identity`, report the mailbox address.
 2. Human: completes the GitHub signup form with that address (ToS + CAPTCHA).
 3. You: `wait_for_email` with `subjectContains` matching GitHub's
    verification mail, then `get_email` and surface the verification link.
 4. Operator: `mailctl agent tag <agentId> github` (in the agent-identity
-   repo), then `npx agent-identity github link <agentId> --username <login>
-   [--credential-ref op://...]` on this machine.
+   repo), then `npx -p @critical-labs/agent-identity agent-identity github
+   link <agentId> --username <login> [--credential-ref op://...]` on this
+   machine.
 
 ## Guiding the human
 
-`npx agent-identity setup` re-runs repo onboarding (backend, identities,
-`.mcp.json`). `npx agent-identity pool provision --count N` mints more
-identities; `npx agent-identity pool status` shows availability. Suggest
-these commands to the human rather than editing config by hand.
+`npx -p @critical-labs/agent-identity agent-identity setup` re-runs repo
+onboarding (backend, identities, `.mcp.json`).
+`npx -p @critical-labs/agent-identity agent-identity pool provision --count N`
+mints more identities;
+`npx -p @critical-labs/agent-identity agent-identity pool status` shows
+availability. Suggest these commands to the human rather than editing
+config by hand. Always use the `-p @critical-labs/agent-identity` form —
+outside a repo where this package is installed, the bare bin names
+resolve to unrelated third-party npm packages.
+
+## Self-host setup (agent-driven)
+
+If there is no backend yet, you can drive the deployment for the human.
+Preflight first: do they have an AWS account with deploy credentials? A
+domain whose DNS they control? The region must be us-east-1, us-west-2,
+or eu-west-1 (SES inbound exists nowhere else). Then walk them through
+the deploy steps in the root README's "Deploy (operator)" section and
+`infra/` — CDK deploy with their domain, DNS records, activating the SES
+receipt rule set, minting a fleet key — and finish with
+`npx -p @critical-labs/agent-identity agent-identity setup` in the
+consuming repo. The setup wizard includes a guided deploy checklist that
+verifies each step; prefer suggesting it over improvising commands. Read
+the repo docs for the details rather than reciting them from memory.
 
 ## Forge operations (via the access proxy)
 
@@ -70,12 +98,12 @@ on GitLab each identity forks into its own namespace.
 ## GitHub commit attribution & email onboarding (operator, not agents)
 
 On GitHub the proxy forces each commit's author to the acting identity
-(e.g. `956112 <956112@…>`). For that to link to a real, owned GitHub
-account — so commits show as authored by the bot account and count toward
-it — the identity's mailbox address must be a **verified email on the bot
-account**. That is what `agent-identity github onboard <agentId>` does: it
-adds the address via the bot's PAT and surfaces the pending verification
-link from the agent's mailbox.
+(e.g. `482913 <482913@mail.example.com>`). For that to link to a real,
+owned GitHub account — so commits show as authored by the bot account and
+count toward it — the identity's mailbox address must be a **verified
+email on the bot account**. That is what `agent-identity github onboard
+<agentId>` does: it adds the address via the bot's PAT and surfaces the
+pending verification link from the agent's mailbox.
 
 > **DANGER — keep onboarding separate from working sessions.** The
 > verification link only completes in a browser **signed in as the bot
