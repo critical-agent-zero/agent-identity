@@ -1,7 +1,8 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  defaultChecklistDeps, deployChecklist, type ChecklistDeps,
+  SES_INBOUND_REGIONS, defaultChecklistDeps, defaultDeployRegion, deployChecklist,
+  type ChecklistDeps,
 } from "./checklist.js";
 import {
   readFleetKeyFile, readMachineConfig, writeFleetKeyFile, writeMachineConfig,
@@ -21,6 +22,7 @@ export interface SetupDeps {
   cwd: string;                 // consuming repo root (where .mcp.json lives)
   skillDir: string;            // bundled skill source directory
   base?: string;               // config dir override (tests)
+  env?: Record<string, string | undefined>; // process.env override (tests)
   fetchFn?: FetchLike;
   checklistDeps?: ChecklistDeps;
   provision?: typeof provisionIdentities;
@@ -30,19 +32,37 @@ export async function runSetup(deps: SetupDeps): Promise<void> {
   const { io } = deps;
   io.say("agent-identity setup");
 
-  // 1. Backend
+  // 1. Backend — connect only helps when a deployment is already at hand,
+  // so a fresh machine (no config, no fleet key) defaults to deploy-new
+  const env = deps.env ?? process.env;
+  const hasExisting = Boolean(
+    readMachineConfig(deps.base).apiUrl
+    || env.AGENT_IDENTITY_FLEET_KEY
+    || readFleetKeyFile(deps.base),
+  );
+  const backendDefault = hasExisting ? "1" : "2";
   let backend = "";
   while (backend !== "1" && backend !== "2") {
     backend = (await io.ask(
-      "Backend: [1] connect to an existing deployment  [2] deploy a new one [1]: ",
-    )).trim() || "1";
+      "Backend: [1] connect to an existing deployment (requires an API URL + fleet key from an operator)  " +
+      `[2] deploy a new one [${backendDefault}]: `,
+    )).trim() || backendDefault;
   }
 
   // 2. Deploy-new guided checklist
   if (backend === "2") {
     const domain = (await io.ask("Mail domain for the new deployment (e.g. mail.example.com): ")).trim();
+    const regionDefault = defaultDeployRegion(env);
+    let region: string;
+    for (;;) {
+      region = (await io.ask(
+        `AWS region for the deployment [${regionDefault}]: `,
+      )).trim() || regionDefault;
+      if (SES_INBOUND_REGIONS.includes(region)) break;
+      io.say(`SES inbound only exists in ${SES_INBOUND_REGIONS.join(", ")}`);
+    }
     const cds = deps.checklistDeps ?? defaultChecklistDeps();
-    for (const step of deployChecklist()) {
+    for (const step of deployChecklist(region)) {
       io.say(`\n== ${step.title}\n${step.instructions}`);
       if (!step.verify) {
         await io.ask("Press enter to continue: ");
