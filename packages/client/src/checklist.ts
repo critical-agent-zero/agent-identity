@@ -122,6 +122,9 @@ export function deployChecklist(region: string): ChecklistStep[] {
     {
       title: "Activate the SES receipt rule set",
       instructions:
+        "WARNING: this REPLACES the account's currently active receipt rule set. " +
+        "If this AWS account already receives mail via SES, merge this stack's rule " +
+        "into your existing set instead of switching sets:\n" +
         `  aws ses set-active-receipt-rule-set --rule-set-name <ReceiptRuleSetName output> --region ${region}`,
       verify: async ({ run }) => {
         const r = await aws(run, ["ses", "describe-active-receipt-rule-set"]);

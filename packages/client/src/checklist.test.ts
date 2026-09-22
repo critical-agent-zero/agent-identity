@@ -151,3 +151,11 @@ describe("deployChecklist", () => {
     expect(await deployChecklist("us-east-1")[6].verify!(empty, { domain: "d" })).toMatch(/no active receipt rule set/);
   });
 });
+
+describe("receipt rule set activation warning (#55)", () => {
+  it("warns that activation replaces the account's currently active rule set", () => {
+    const step = deployChecklist("us-east-1").find((s) => s.title.includes("receipt rule set"))!;
+    expect(step.instructions).toMatch(/replaces/i);
+    expect(step.instructions).toMatch(/already .*receiv|existing/i);
+  });
+});
