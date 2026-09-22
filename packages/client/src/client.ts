@@ -70,12 +70,16 @@ export class AgentIdentityClient {
     return this.request("GET", "/me");
   }
 
-  listEmails(opts: { since?: string; limit?: number; cursor?: string } = {}):
-    Promise<{ emails: EmailSummary[]; cursor?: string }> {
+  listEmails(opts: {
+    since?: string; limit?: number; cursor?: string;
+    includeUnsolicited?: boolean; includeUnauthenticated?: boolean;
+  } = {}): Promise<{ emails: EmailSummary[]; cursor?: string }> {
     const q = new URLSearchParams();
     if (opts.since) q.set("since", opts.since);
     if (opts.limit) q.set("limit", String(opts.limit));
     if (opts.cursor) q.set("cursor", opts.cursor);
+    if (opts.includeUnsolicited) q.set("includeUnsolicited", "true");
+    if (opts.includeUnauthenticated) q.set("includeUnauthenticated", "true");
     const qs = q.toString();
     return this.request("GET", `/emails${qs ? `?${qs}` : ""}`);
   }
