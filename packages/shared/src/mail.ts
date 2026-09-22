@@ -5,9 +5,19 @@
 // carries no raw control bytes or invisible characters.
 const range = (from: number, to: number) => `${String.fromCodePoint(from)}-${String.fromCodePoint(to)}`;
 
+// Quoted display names may legitimately contain commas, "@", or "<", so
+// quoted sections are ignored when counting mailboxes.
+const QUOTED_RE = /"(?:[^"\\]|\\.)*"/g;
+
 // The display name of a From header is attacker-controlled; only the domain
 // of the address part counts. Angle-bracketed address wins over the bare form.
+// RFC 5322 allows several mailboxes in From and the parsed header preserves
+// them all; an attacker can append an allowlisted mailbox after their own
+// authenticated address, so any multi-mailbox From fails closed to undefined.
 export function senderDomain(from: string): string | undefined {
+  const unquoted = from.replace(QUOTED_RE, "");
+  const withAddress = unquoted.split(",").filter((part) => part.includes("@"));
+  if (withAddress.length > 1 || (unquoted.match(/</g) ?? []).length > 1) return undefined;
   const angled = /<([^<>]*)>\s*$/.exec(from);
   const addr = (angled ? angled[1]! : from).trim();
   const at = addr.lastIndexOf("@");

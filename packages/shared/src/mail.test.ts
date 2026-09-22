@@ -24,6 +24,17 @@ describe("senderDomain", () => {
     expect(senderDomain("just a name")).toBeUndefined();
     expect(senderDomain("")).toBeUndefined();
   });
+
+  it("fails closed on a multi-mailbox From header", () => {
+    expect(senderDomain("Evil <attacker@evil.example>, GitHub <noreply@github.com>")).toBeUndefined();
+    expect(senderDomain("attacker@evil.example, noreply@github.com")).toBeUndefined();
+    expect(senderDomain("Evil <attacker@evil.example> <noreply@github.com>")).toBeUndefined();
+  });
+
+  it("allows a comma or angle bracket inside a quoted display name", () => {
+    expect(senderDomain('"GitHub, Inc." <noreply@github.com>')).toBe("github.com");
+    expect(senderDomain('"a <b@c.d>" <noreply@github.com>')).toBe("github.com");
+  });
 });
 
 describe("matchesSenderDomain", () => {
@@ -36,6 +47,11 @@ describe("matchesSenderDomain", () => {
     expect(matchesSenderDomain("<noreply@evilgithub.com>", "github.com")).toBe(false);
     expect(matchesSenderDomain("noreply@github.com <x@evil.example>", "github.com")).toBe(false);
     expect(matchesSenderDomain("no address here", "github.com")).toBe(false);
+  });
+
+  it("does not trust an allowlisted mailbox appended after the attacker's", () => {
+    expect(matchesSenderDomain("Evil <attacker@evil.example>, GitHub <noreply@github.com>", "github.com")).toBe(false);
+    expect(matchesSenderDomain("attacker@evil.example, noreply@github.com", "github.com")).toBe(false);
   });
 });
 

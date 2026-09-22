@@ -203,6 +203,18 @@ describe("get_verification_link", () => {
     expect(res).toEqual({ timedOut: true });
   });
 
+  it("rejects a multi-mailbox From that appends an allowlisted address", async () => {
+    const tools = makeTools(makeManager(clientWith(
+      ["https://github.com/confirm"],
+      [{ id: "9", from: "Evil <attacker@evil.example>, GitHub <noreply@github.com>", subject: "Verify", receivedAt: "t" }],
+    )));
+    const res = await tools.getVerificationLink(
+      { senderDomain: "github.com", linkOrigin: "https://github.com", timeoutSeconds: 0.05 },
+      { pollMs: 10, sleep: async () => {} },
+    );
+    expect(res).toEqual({ timedOut: true });
+  });
+
   it("applies the optional subject filter", async () => {
     const client = clientWith(["https://github.com/confirm"]);
     const tools = makeTools(makeManager(client));

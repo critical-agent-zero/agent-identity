@@ -230,6 +230,30 @@ describe("processRecord sender allowlist", () => {
     const stored = (deps.emails.putEmail as ReturnType<typeof vi.fn>).mock.calls[0][1];
     expect(stored.unsolicited).toBe(true);
   });
+
+  it("flags mail whose real sender is non-allowlisted despite an allowlisted co-address", async () => {
+    // RFC 5322 multi-mailbox From: the attacker authenticates their own domain
+    // and appends an allowlisted mailbox; the mail must stay flagged.
+    const deps = {
+      ...makeDeps(),
+      getRaw: rawFrom("Evil <attacker@evil.example>, GitHub <noreply@github.com>"),
+      senderAllowlist: ["github.com"],
+    };
+    await processRecord(sesRecord() as never, deps);
+    const stored = (deps.emails.putEmail as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(stored.unsolicited).toBe(true);
+  });
+
+  it("flags the bare-address multi-mailbox variant too", async () => {
+    const deps = {
+      ...makeDeps(),
+      getRaw: rawFrom("attacker@evil.example, noreply@github.com"),
+      senderAllowlist: ["github.com"],
+    };
+    await processRecord(sesRecord() as never, deps);
+    const stored = (deps.emails.putEmail as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(stored.unsolicited).toBe(true);
+  });
 });
 
 describe("processRecord text sanitization", () => {
@@ -260,5 +284,34 @@ describe("processRecord text sanitization", () => {
     await processRecord(sesRecord() as never, deps);
     const body = (deps.putBodyOverflow as ReturnType<typeof vi.fn>).mock.calls[0][2] as { text: string };
     expect(body.text).toContain("hi[31m there");
+  });
+
+  const htmlRaw = () => {
+    const esc = String.fromCodePoint(0x1b);
+    return vi.fn(async () => Buffer.from(
+      `From: a@b.c\r\nSubject: s\r\nContent-Type: text/html\r\n\r\n` +
+      `<p>hi${esc}[31m</p><a href="https://x.example/${esc}]8;;evil">x</a>`,
+    ));
+  };
+
+  it("strips ANSI escapes from the stored html body and links", async () => {
+    const esc = String.fromCodePoint(0x1b);
+    const deps = { ...makeDeps(), getRaw: htmlRaw() };
+    await processRecord(sesRecord() as never, deps);
+    const stored = (deps.emails.putEmail as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(stored.html).toContain("<p>hi[31m</p>");
+    expect(stored.html).not.toContain(esc);
+    expect(stored.links).toContain("https://x.example/]8;;evil");
+    for (const link of stored.links as string[]) expect(link).not.toContain(esc);
+  });
+
+  it("sanitizes html and links in the overflow body written to S3", async () => {
+    const esc = String.fromCodePoint(0x1b);
+    const deps = { ...makeDeps(), maxInlineBodyBytes: 4, getRaw: htmlRaw() };
+    await processRecord(sesRecord() as never, deps);
+    const body = (deps.putBodyOverflow as ReturnType<typeof vi.fn>).mock.calls[0][2] as
+      { html?: string; links: string[] };
+    expect(body.html).not.toContain(esc);
+    for (const link of body.links) expect(link).not.toContain(esc);
   });
 });

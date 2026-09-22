@@ -53,9 +53,16 @@ export async function processRecord(record: SESEventRecord, deps: IngestDeps): P
 
     if (!parsed) {
       const p = await parseEmail(await deps.getRaw(rawS3Key));
-      // Storage-layer sanitization: subject and text reach agents verbatim,
-      // so the ANSI-injection character class is stripped before persisting.
-      parsed = { ...p, subject: sanitizeMailText(p.subject), text: sanitizeMailText(p.text) };
+      // Storage-layer sanitization: subject, text, html, and links all reach
+      // agents verbatim via get_email, so the ANSI-injection character class
+      // is stripped from each before persisting (inline and overflow alike).
+      parsed = {
+        ...p,
+        subject: sanitizeMailText(p.subject),
+        text: sanitizeMailText(p.text),
+        html: p.html === undefined ? undefined : sanitizeMailText(p.html),
+        links: p.links.map((l) => sanitizeMailText(l)),
+      };
     }
     // Flag, don't drop: non-allowlisted mail stays readable by explicit
     // opt-in (includeUnsolicited) and for forensics.
