@@ -1,5 +1,8 @@
 import type { AgentsRepo, EmailsRepo } from "@agent-identity/api";
-import type { AuthVerdictStatus, EmailAuthVerdicts } from "@agent-identity/shared";
+import {
+  matchesSenderDomain, sanitizeMailText,
+  type AuthVerdictStatus, type EmailAuthVerdicts,
+} from "@agent-identity/shared";
 import type { SESEventRecord, SESReceipt } from "aws-lambda";
 import { parseEmail } from "./parse.js";
 
@@ -10,6 +13,9 @@ export interface IngestDeps {
   agents: Pick<AgentsRepo, "getByLocalPart">;
   emails: Pick<EmailsRepo, "putEmail">;
   maxInlineBodyBytes: number;
+  /** Sender domains whose mail delivers unflagged; anything else is stored
+   *  with unsolicited: true and hidden from default reads. */
+  senderAllowlist: string[];
 }
 
 // Missing verdicts (scanning disabled by a self-hoster) yield undefined, never a guess.
@@ -45,13 +51,23 @@ export async function processRecord(record: SESEventRecord, deps: IngestDeps): P
     const agent = await deps.agents.getByLocalPart(localPart);
     if (!agent || agent.status !== "active") continue;
 
-    parsed ??= await parseEmail(await deps.getRaw(rawS3Key));
+    if (!parsed) {
+      const p = await parseEmail(await deps.getRaw(rawS3Key));
+      // Storage-layer sanitization: subject and text reach agents verbatim,
+      // so the ANSI-injection character class is stripped before persisting.
+      parsed = { ...p, subject: sanitizeMailText(p.subject), text: sanitizeMailText(p.text) };
+    }
+    // Flag, don't drop: non-allowlisted mail stays readable by explicit
+    // opt-in (includeUnsolicited) and for forensics.
+    const unsolicited =
+      !deps.senderAllowlist.some((d) => matchesSenderDomain(parsed!.from, d));
     const bodySize = Buffer.byteLength(parsed.text) + Buffer.byteLength(parsed.html ?? "");
     const base = {
       messageId: mail.messageId,
       from: parsed.from, subject: parsed.subject,
       receivedAt: mail.timestamp, links: parsed.links, rawS3Key,
       ...(auth ? { auth } : {}),
+      ...(unsolicited ? { unsolicited: true } : {}),
     };
     if (bodySize > deps.maxInlineBodyBytes) {
       const bodyS3Key = await deps.putBodyOverflow(agent.agentId, mail.messageId, {
@@ -103,6 +119,10 @@ export function makeLambdaDeps(): IngestDeps {
     agents: new AgentsRepoImpl(ddb, table, domain),
     emails: new EmailsRepoImpl(ddb, table, Number(process.env.RETENTION_DAYS ?? "90")),
     maxInlineBodyBytes: 300_000,
+    // Default mirrors the stack's senderAllowlist context default, so a
+    // self-hoster running without the env var still gets the forge domains.
+    senderAllowlist: (process.env.MAIL_SENDER_ALLOWLIST ?? "github.com,gitlab.com")
+      .split(",").map((s) => s.trim()).filter(Boolean),
   };
 }
 
