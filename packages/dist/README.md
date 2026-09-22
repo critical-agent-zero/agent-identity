@@ -8,7 +8,7 @@ Persistent, verifiable identities for AI agents. Each identity gets an Ed25519 k
 
 ```bash
 npm install @critical-labs/agent-identity
-npx agent-identity setup
+npx -p @critical-labs/agent-identity agent-identity setup
 ```
 
 The setup wizard prompts for your backend URL and fleet key, writes `~/.config/agent-identity/fleet_key` (mode 0600), provisions identities into the local pool, writes `.mcp.json`, and installs the bundled skill into your repo.
