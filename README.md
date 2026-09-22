@@ -181,7 +181,9 @@ tests, builds, smoke-tests the bins, and **stages**
 `@critical-labs/agent-identity` on npm — the version is uploaded non-public
 and goes live only when a maintainer approves it on npmjs.com (or with
 `npm stage list @critical-labs/agent-identity` then
-`npm stage approve <stage-id> --otp <code>`). The `NPM_TOKEN` repository
+`npm stage approve <stage-id> --otp <code>` — the `npm stage` command
+needs npm ≥ 11.15 / Node ≥ 22.14; older npm reports "Unknown command").
+The `NPM_TOKEN` repository
 secret is a granular **stage-only** token (rotate before it expires; the
 current one expires 2026-12-21), so a leaked token can never push a version
 live without a 2FA'd human approval.

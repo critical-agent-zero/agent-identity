@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { linkGithub, listPool, poolStatus } from "./claims.js";
 import { AgentIdentityClient } from "./client.js";
 import { readMachineConfig, resolveFleetKey, resolveGithubPat } from "./config.js";
+import { promptAsk } from "./prompt-io.js";
 import { githubApi, onboardGithubEmail } from "./github-onboard.js";
 import { provisionIdentities } from "./provision.js";
 import { runSetup } from "./wizard.js";
@@ -26,7 +27,7 @@ program
     const rl = readline.createInterface({ input, output });
     try {
       await runSetup({
-        io: { ask: (q) => rl.question(q), say: (m) => console.log(m) },
+        io: { ask: promptAsk(rl), say: (m) => console.log(m) },
         cwd: process.cwd(),
         skillDir: opts.skillDir
           ?? join(dirname(fileURLToPath(import.meta.url)), "..", "skill"),

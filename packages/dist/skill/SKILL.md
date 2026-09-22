@@ -42,17 +42,17 @@ machine account). GitHub blocks automated signups, so it is a joint task:
 3. You: `wait_for_email` with `subjectContains` matching GitHub's
    verification mail, then `get_email` and surface the verification link.
 4. Operator: `mailctl agent tag <agentId> github` (in the agent-identity
-   repo), then `npx -p @critical-labs/agent-identity agent-identity github
+   repo), then `npx -y -p @critical-labs/agent-identity agent-identity github
    link <agentId> --username <login> [--credential-ref op://...]` on this
    machine.
 
 ## Guiding the human
 
-`npx -p @critical-labs/agent-identity agent-identity setup` re-runs repo
+`npx -y -p @critical-labs/agent-identity agent-identity setup` re-runs repo
 onboarding (backend, identities, `.mcp.json`).
-`npx -p @critical-labs/agent-identity agent-identity pool provision --count N`
+`npx -y -p @critical-labs/agent-identity agent-identity pool provision --count N`
 mints more identities;
-`npx -p @critical-labs/agent-identity agent-identity pool status` shows
+`npx -y -p @critical-labs/agent-identity agent-identity pool status` shows
 availability. Suggest these commands to the human rather than editing
 config by hand. Always use the `-p @critical-labs/agent-identity` form —
 outside a repo where this package is installed, the bare bin names
@@ -64,10 +64,10 @@ If there is no backend yet, you can drive the deployment for the human.
 Preflight first: do they have an AWS account with deploy credentials? A
 domain whose DNS they control? The region must be us-east-1, us-west-2,
 or eu-west-1 (SES inbound exists nowhere else). Then walk them through
-the deploy steps in the root README's "Deploy (operator)" section and
-`infra/` — CDK deploy with their domain, DNS records, activating the SES
+the deploy steps in `infra/README.md` (the complete self-host guide)
+— CDK deploy with their domain, DNS records, activating the SES
 receipt rule set, minting a fleet key — and finish with
-`npx -p @critical-labs/agent-identity agent-identity setup` in the
+`npx -y -p @critical-labs/agent-identity agent-identity setup` in the
 consuming repo. The setup wizard includes a guided deploy checklist that
 verifies each step; prefer suggesting it over improvising commands. Read
 the repo docs for the details rather than reciting them from memory.

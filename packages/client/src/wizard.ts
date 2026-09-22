@@ -51,6 +51,7 @@ export async function runSetup(deps: SetupDeps): Promise<void> {
 
   // 2. Deploy-new guided checklist
   if (backend === "2") {
+    io.say("This deploys a CDK stack into your AWS account (you need deploy credentials and a domain whose DNS you control).");
     const domain = (await io.ask("Mail domain for the new deployment (e.g. mail.example.com): ")).trim();
     const regionDefault = defaultDeployRegion(env);
     let region: string;
