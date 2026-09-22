@@ -96,6 +96,8 @@ SES inbound email is only available in **us-east-1**, **us-west-2**, and **eu-we
    ```
    The stack outputs the API URL, the MX record value, and the SES domain verification records. Note the `MxRecord` output.
 
+   The API is rate-limited by default (25 req/s steady, 50 burst, across all routes) so a discovered endpoint can't run up your Lambda/DynamoDB bill. Tune with `-c apiThrottleRate=N -c apiThrottleBurst=N` if your fleet needs more headroom.
+
 3. Verify your domain in SES and add DNS records. Create the SES email identity for your domain:
    ```bash
    aws sesv2 create-email-identity --email-identity mail.example.com
