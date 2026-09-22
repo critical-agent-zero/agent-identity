@@ -52,6 +52,33 @@ describe("EmailsRepo", () => {
     expect(await repo.getEmail("482913", "01ABC")).toBeUndefined();
   });
 
+  it("listEmails maps auth verdicts and omits the field for old records", async () => {
+    ddb.on(QueryCommand).resolves({
+      Items: [
+        { SK: "EMAIL#01ABC", from: "a@b.c", subject: "s", receivedAt: "t", auth: { dmarc: "PASS" } },
+        { SK: "EMAIL#01ABD", from: "a@b.c", subject: "s", receivedAt: "t" },
+      ],
+    });
+    const { emails } = await repo.listEmails("482913", {});
+    expect(emails[0].auth).toEqual({ dmarc: "PASS" });
+    // Old records must serialize without the key, not as null
+    expect(JSON.parse(JSON.stringify(emails[1]))).not.toHaveProperty("auth");
+  });
+
+  it("getEmail maps auth verdicts and tolerates their absence", async () => {
+    ddb.on(GetCommand).resolves({
+      Item: { from: "a@b.c", subject: "s", receivedAt: "t", text: "hi", links: [], auth: { spf: "FAIL", dkim: "PASS" } },
+    });
+    const withAuth = await repo.getEmail("482913", "01ABC");
+    expect(withAuth?.auth).toEqual({ spf: "FAIL", dkim: "PASS" });
+
+    ddb.on(GetCommand).resolves({
+      Item: { from: "a@b.c", subject: "s", receivedAt: "t", text: "hi", links: [] },
+    });
+    const legacy = await repo.getEmail("482913", "01ABC");
+    expect(JSON.parse(JSON.stringify(legacy))).not.toHaveProperty("auth");
+  });
+
   it("putEmail is idempotent: same messageId + receivedAt yields same id and SK", async () => {
     ddb.on(PutCommand).resolves({});
     const email = {

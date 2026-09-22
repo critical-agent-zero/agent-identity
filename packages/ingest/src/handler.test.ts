@@ -19,6 +19,7 @@ function makeDeps(): IngestDeps {
       "From: a@b.c\r\nSubject: s\r\nContent-Type: text/plain\r\n\r\nhello https://x.example/1",
     )),
     putBodyOverflow: vi.fn(async () => "bodies/482913/X.json"),
+    quarantineRaw: vi.fn(async () => {}),
     agents: { getByLocalPart: vi.fn(async (id: string) =>
       id === "482913" ? { agentId: "482913", status: "active" } : undefined,
     )} as never,
@@ -43,6 +44,7 @@ describe("processEvent", () => {
         );
       }),
       putBodyOverflow: vi.fn(async () => "bodies/482913/X.json"),
+      quarantineRaw: vi.fn(async () => {}),
       agents: { getByLocalPart: vi.fn(async (id: string) =>
         id === "482913" ? { agentId: "482913", status: "active" } : undefined,
       )} as never,
@@ -127,5 +129,69 @@ describe("processRecord", () => {
     const stored = (deps.emails.putEmail as ReturnType<typeof vi.fn>).mock.calls[0][1];
     expect(stored.bodyS3Key).toBe("bodies/482913/X.json");
     expect(stored.text).toBeUndefined();
+  });
+});
+
+describe("processRecord auth verdicts", () => {
+  it("records SES verdicts on the stored email when all pass", async () => {
+    const deps = makeDeps();
+    await processRecord(sesRecord({
+      spfVerdict: { status: "PASS" },
+      dkimVerdict: { status: "PASS" },
+      dmarcVerdict: { status: "PASS" },
+    }) as never, deps);
+    expect(deps.emails.putEmail).toHaveBeenCalledWith("482913", expect.objectContaining({
+      auth: { spf: "PASS", dkim: "PASS", dmarc: "PASS", spam: "PASS", virus: "PASS" },
+    }));
+    expect(deps.quarantineRaw).not.toHaveBeenCalled();
+  });
+
+  it("quarantines on DMARC FAIL instead of delivering", async () => {
+    const deps = makeDeps();
+    await processRecord(sesRecord({
+      spfVerdict: { status: "PASS" },
+      dkimVerdict: { status: "PASS" },
+      dmarcVerdict: { status: "FAIL" },
+    }) as never, deps);
+    expect(deps.emails.putEmail).not.toHaveBeenCalled();
+    expect(deps.quarantineRaw).toHaveBeenCalledWith("m1");
+  });
+
+  it("quarantines when both SPF and DKIM FAIL", async () => {
+    const deps = makeDeps();
+    await processRecord(sesRecord({
+      spfVerdict: { status: "FAIL" },
+      dkimVerdict: { status: "FAIL" },
+      dmarcVerdict: { status: "GRAY" },
+    }) as never, deps);
+    expect(deps.emails.putEmail).not.toHaveBeenCalled();
+    expect(deps.quarantineRaw).toHaveBeenCalledWith("m1");
+  });
+
+  it("delivers an SPF-only failure with the verdict recorded", async () => {
+    const deps = makeDeps();
+    await processRecord(sesRecord({
+      spfVerdict: { status: "FAIL" },
+      dkimVerdict: { status: "PASS" },
+      dmarcVerdict: { status: "GRAY" },
+    }) as never, deps);
+    expect(deps.quarantineRaw).not.toHaveBeenCalled();
+    expect(deps.emails.putEmail).toHaveBeenCalledWith("482913", expect.objectContaining({
+      auth: expect.objectContaining({ spf: "FAIL", dkim: "PASS", dmarc: "GRAY" }),
+    }));
+  });
+
+  it("tolerates missing verdicts: delivers with no auth field", async () => {
+    const deps = makeDeps();
+    const record = {
+      ses: {
+        mail: { messageId: "m1", timestamp: "2026-07-04T10:00:00.000Z" },
+        receipt: { recipients: ["482913@mail.example.com"] },
+      },
+    };
+    await processRecord(record as never, deps);
+    expect(deps.quarantineRaw).not.toHaveBeenCalled();
+    const stored = (deps.emails.putEmail as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(stored.auth).toBeUndefined();
   });
 });

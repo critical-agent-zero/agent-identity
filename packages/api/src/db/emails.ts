@@ -1,4 +1,7 @@
-import { deterministicUlid, encodeTime, type EmailFull, type EmailSummary } from "@agent-identity/shared";
+import {
+  deterministicUlid, encodeTime,
+  type EmailAuthVerdicts, type EmailFull, type EmailSummary,
+} from "@agent-identity/shared";
 import {
   DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand,
 } from "@aws-sdk/lib-dynamodb";
@@ -13,6 +16,7 @@ export interface NewEmail {
   links: string[];
   rawS3Key: string;
   bodyS3Key?: string;
+  auth?: EmailAuthVerdicts;
 }
 
 export class InvalidCursorError extends Error {}
@@ -65,6 +69,8 @@ export class EmailsRepo {
         from: i.from as string,
         subject: i.subject as string,
         receivedAt: i.receivedAt as string,
+        // Pre-verdict records have no auth attribute; undefined drops from JSON
+        auth: i.auth as EmailAuthVerdicts | undefined,
       })),
       cursor: res.LastEvaluatedKey
         ? Buffer.from(JSON.stringify(res.LastEvaluatedKey)).toString("base64url")
@@ -86,6 +92,7 @@ export class EmailsRepo {
       html: Item.html as string | undefined,
       links: (Item.links as string[]) ?? [],
       bodyS3Key: Item.bodyS3Key as string | undefined,
+      auth: Item.auth as EmailAuthVerdicts | undefined,
     };
   }
 }
