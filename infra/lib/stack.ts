@@ -1,7 +1,7 @@
 import {
   CfnOutput, Duration, RemovalPolicy, Stack, type StackProps,
 } from "aws-cdk-lib";
-import { HttpApi, HttpMethod } from "aws-cdk-lib/aws-apigatewayv2";
+import { CfnStage, HttpApi, HttpMethod } from "aws-cdk-lib/aws-apigatewayv2";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
 import { PolicyStatement } from "aws-cdk-lib/aws-iam";
@@ -18,6 +18,11 @@ const pkg = (p: string) => fileURLToPath(new URL(`../../packages/${p}`, import.m
 export interface AgentIdentityStackProps extends StackProps {
   domain: string;
   retentionDays?: number;
+  /** Default-stage throttling. Every request costs a Lambda invoke plus a
+   *  DynamoDB nonce write, so an unthrottled endpoint is a denial-of-wallet
+   *  surface for whoever self-hosts this stack — protection is on by default
+   *  and only tunable, not removable, from props. */
+  apiThrottle?: { rateLimit: number; burstLimit: number };
 }
 
 export class AgentIdentityStack extends Stack {
@@ -77,6 +82,13 @@ export class AgentIdentityStack extends Stack {
     const httpApi = new HttpApi(this, "HttpApi", {
       defaultIntegration: new HttpLambdaIntegration("ApiInt", apiFn),
     });
+    // The L2 HttpApi's auto-created $default stage exposes no throttle prop;
+    // set it on the L1. Applies to every route, /forge/* included.
+    const throttle = props.apiThrottle ?? { rateLimit: 25, burstLimit: 50 };
+    (httpApi.defaultStage!.node.defaultChild as CfnStage).defaultRouteSettings = {
+      throttlingRateLimit: throttle.rateLimit,
+      throttlingBurstLimit: throttle.burstLimit,
+    };
 
     const proxyFn = new NodejsFunction(this, "Proxy", {
       ...fnDefaults,

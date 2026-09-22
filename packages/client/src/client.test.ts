@@ -41,6 +41,55 @@ describe("AgentIdentityClient", () => {
     });
     await expect(client.me()).rejects.toThrow(/403.*revoked/s);
   });
+
+  it("retries a 429 with backoff and succeeds", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response("throttled", { status: 429 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ agentId: "482913" }), { status: 200 }));
+    const sleep = vi.fn(async (_ms: number) => {});
+    const client = new AgentIdentityClient({
+      apiUrl: "https://api.example", keypair: kp, fetch: fetchMock as never, sleep,
+    });
+    await expect(client.me()).resolves.toEqual({ agentId: "482913" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    const delay = sleep.mock.calls[0]![0] as number;
+    expect(delay).toBeGreaterThan(0);
+    expect(delay).toBeLessThanOrEqual(2000);
+  });
+
+  it("honors Retry-After (seconds) on a 429", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response("throttled", { status: 429, headers: { "retry-after": "2" } }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    const sleep = vi.fn(async (_ms: number) => {});
+    const client = new AgentIdentityClient({
+      apiUrl: "https://api.example", keypair: kp, fetch: fetchMock as never, sleep,
+    });
+    await client.me();
+    expect(sleep).toHaveBeenCalledWith(2000);
+  });
+
+  it("gives up after two retries on persistent 429", async () => {
+    const fetchMock = vi.fn(async () => new Response("throttled", { status: 429 }));
+    const sleep = vi.fn(async (_ms: number) => {});
+    const client = new AgentIdentityClient({
+      apiUrl: "https://api.example", keypair: kp, fetch: fetchMock as never, sleep,
+    });
+    await expect(client.me()).rejects.toThrow(/API 429/);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not retry non-429 errors", async () => {
+    const fetchMock = vi.fn(async () => new Response("nope", { status: 500 }));
+    const sleep = vi.fn(async (_ms: number) => {});
+    const client = new AgentIdentityClient({
+      apiUrl: "https://api.example", keypair: kp, fetch: fetchMock as never, sleep,
+    });
+    await expect(client.me()).rejects.toThrow(/API 500/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
 });
 
 describe("forge methods", () => {

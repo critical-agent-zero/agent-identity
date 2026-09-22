@@ -9,7 +9,7 @@ Giving an agent GitHub access today means giving it a credential: a GitHub
 account whose PAT lives wherever the agent runs. That has three compounding
 costs. Every new agent needs its own account — and GitHub's anti-abuse
 systems block bulk signups of machine-looking accounts (observed directly:
-signup for `critical-agent-956112` was rejected on 2026-08-20). Every
+signup for `critical-agent-482913` was rejected on 2026-08-20). Every
 machine in a future fleet needs secrets copied to it — the key-distribution
 problem the session-identity-claiming design deliberately deferred. And an
 agent holding a raw credential can use it in ways no client-side guard-rail

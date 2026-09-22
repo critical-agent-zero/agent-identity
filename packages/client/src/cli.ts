@@ -45,12 +45,13 @@ pool
   .description("mint identities into the machine-local pool")
   .requiredOption("--count <n>", "how many identities to mint")
   .option("--api-url <url>", "API base URL (default: machine config)")
-  .option("--fleet-key <key>", "fleet key (default: env, then ~/.config/agent-identity/fleet_key)")
-  .action(async (opts: { count: string; apiUrl?: string; fleetKey?: string }) => {
+  // No raw-secret flag: the fleet key comes from AGENT_IDENTITY_FLEET_KEY or
+  // ~/.config/agent-identity/fleet_key — argv leaks into shell history and ps.
+  .action(async (opts: { count: string; apiUrl?: string }) => {
     const apiUrl = opts.apiUrl ?? readMachineConfig().apiUrl ?? process.env.AGENT_IDENTITY_API_URL;
-    const fleetKey = opts.fleetKey ?? resolveFleetKey();
+    const fleetKey = resolveFleetKey();
     if (!apiUrl) return fail("no API URL (pass --api-url or run: agent-identity setup)");
-    if (!fleetKey) return fail("no fleet key (pass --fleet-key or run: agent-identity setup)");
+    if (!fleetKey) return fail("no fleet key (set AGENT_IDENTITY_FLEET_KEY or ~/.config/agent-identity/fleet_key, or run: agent-identity setup)");
     const count = Number.parseInt(opts.count, 10);
     if (!Number.isInteger(count) || count < 1) return fail("--count must be a positive integer");
     const results = await provisionIdentities({ count, apiUrl, fleetKey });
@@ -96,14 +97,15 @@ github
   .command("onboard <agentId>")
   .description("add this identity's mailbox email to the bot GitHub account for commit attribution, and surface the verification link")
   .option("--api-url <url>", "API base URL (default: machine config)")
-  .option("--pat <pat>", "GitHub PAT (default: env AGENT_IDENTITY_GITHUB_PAT, then ~/.config/agent-identity/github_pat)")
+  // No raw-secret flag: the PAT comes from AGENT_IDENTITY_GITHUB_PAT or
+  // ~/.config/agent-identity/github_pat — argv leaks into shell history and ps.
   .option("--timeout <seconds>", "how long to wait for the verification email", "120")
-  .action(async (agentId: string, opts: { apiUrl?: string; pat?: string; timeout: string }) => {
+  .action(async (agentId: string, opts: { apiUrl?: string; timeout: string }) => {
     const entry = listPool().find((p) => p.name === agentId || p.profile.agentId === agentId);
     if (!entry?.profile.address) return fail(`no pool identity ${agentId} with a mailbox address`);
     const apiUrl = opts.apiUrl ?? readMachineConfig().apiUrl ?? process.env.AGENT_IDENTITY_API_URL;
     if (!apiUrl) return fail("no API URL (pass --api-url or run: agent-identity setup)");
-    const pat = opts.pat ?? resolveGithubPat();
+    const pat = resolveGithubPat();
     if (!pat) return fail("no GitHub PAT (set AGENT_IDENTITY_GITHUB_PAT or ~/.config/agent-identity/github_pat)");
     const address = entry.profile.address;
     const timeoutSeconds = Number.parseInt(opts.timeout, 10) || 120;

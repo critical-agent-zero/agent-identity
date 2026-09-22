@@ -31,8 +31,8 @@ describe("githubApi", () => {
   it("addEmail POSTs the email array", async () => {
     const { fn, calls } = makeFetch({ "POST https://api.github.com/user/emails": { status: 201, json: [] } });
     const api = githubApi("ghp_x", fn);
-    await api.addEmail("956112@agents.example");
-    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ emails: ["956112@agents.example"] });
+    await api.addEmail("482913@agents.example");
+    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ emails: ["482913@agents.example"] });
   });
 
   it("throws with status on a non-2xx", async () => {
@@ -42,7 +42,7 @@ describe("githubApi", () => {
 });
 
 describe("onboardGithubEmail", () => {
-  const ADDR = "956112@agents.example";
+  const ADDR = "482913@agents.example";
   const verifyEmail = { id: "e1", from: '"GitHub" <noreply@github.com>', subject: "[GitHub] Please verify your email address", receivedAt: "t" };
   const link = "https://github.com/users/critical-agent-zero/emails/1/confirm_verification/abc";
 
@@ -106,5 +106,93 @@ describe("onboardGithubEmail", () => {
     const api = fakeApi({ emails: [] });
     const r = await onboardGithubEmail({ address: ADDR, api, mailbox: fakeMailbox([], []), ...fast });
     expect(r.status).toBe("no-verification-email");
+  });
+
+  it("accepts mail from a github.com subdomain sender", async () => {
+    const subdomainMail = { ...verifyEmail, from: "GitHub <noreply@mail.github.com>" };
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi(), mailbox: fakeMailbox([subdomainMail], [link]), ...fast,
+    });
+    expect(r.status).toBe("pending");
+    expect(r.verificationLink).toBe(link);
+  });
+
+  it("ignores mail whose display name says GitHub but whose address is not github.com", async () => {
+    const spoof = { ...verifyEmail, from: '"GitHub" <x@evil.example>' };
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi(), mailbox: fakeMailbox([spoof], [link]), ...fast,
+    });
+    expect(r.status).toBe("no-verification-email");
+    expect(r.verificationLink).toBeUndefined();
+  });
+
+  it("ignores mail from a lookalike domain that merely contains github.com", async () => {
+    const spoof = { ...verifyEmail, from: "noreply@github.com.evil.example" };
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi(), mailbox: fakeMailbox([spoof], [link]), ...fast,
+    });
+    expect(r.status).toBe("no-verification-email");
+  });
+
+  it("rejects a confirm_verification link on a lookalike origin", async () => {
+    const evil = "https://github.com.evil.example/confirm_verification/x";
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi(), mailbox: fakeMailbox([verifyEmail], [evil]), ...fast,
+    });
+    expect(r.status).toBe("no-verification-email");
+    expect(r.verificationLink).toBeUndefined();
+  });
+
+  it("rejects an http:// downgrade of a github.com link", async () => {
+    const insecure = "http://github.com/users/critical-agent-zero/emails/1/confirm_verification/abc";
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi(), mailbox: fakeMailbox([verifyEmail], [insecure]), ...fast,
+    });
+    expect(r.status).toBe("no-verification-email");
+    expect(r.verificationLink).toBeUndefined();
+  });
+
+  it("rejects a github.com link carrying ANSI-escape control bytes (terminal-rewrite spoof)", async () => {
+    // ESC[2K erases the line, ESC[1G returns to column 1 — a terminal renders
+    // only the trailing attacker URL while new URL().origin still reports
+    // https://github.com. Decoded from &#27; entities by ingest extractLinks().
+    const spoofed =
+      "https://github.com/users/critical-agent-zero/emails/1/confirm_verification/x\u001b[2K\u001b[1G  https://evil.example/confirm_verification/steal";
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi(), mailbox: fakeMailbox([verifyEmail], [spoofed]), ...fast,
+    });
+    expect(r.status).toBe("no-verification-email");
+    expect(r.verificationLink).toBeUndefined();
+  });
+
+  it("rejects github.com links carrying other C0/C1/DEL control bytes", async () => {
+    const base = "https://github.com/users/critical-agent-zero/emails/1/confirm_verification/";
+    for (const ctl of ["\u0000", "\u0008", "\u007f", "\u009b"]) {
+      const r = await onboardGithubEmail({
+        address: ADDR, api: fakeApi(), mailbox: fakeMailbox([verifyEmail], [`${base}a${ctl}b`]), ...fast,
+      });
+      expect(r.status).toBe("no-verification-email");
+    }
+  });
+
+  it("returns the WHATWG-serialized link so the validated string is the displayed string", async () => {
+    const odd = "https://github.com/users/critical-agent-zero/emails/1/confirm_verification/a b";
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi(), mailbox: fakeMailbox([verifyEmail], [odd]), ...fast,
+    });
+    expect(r.status).toBe("pending");
+    expect(r.verificationLink).toBe("https://github.com/users/critical-agent-zero/emails/1/confirm_verification/a%20b");
+  });
+
+  it("skips unparseable and off-origin links but returns the legit one", async () => {
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi(), mailbox: fakeMailbox([verifyEmail], [
+        "not a url with confirm_verification",
+        "https://evil.example/confirm_verification/x",
+        link,
+      ]), ...fast,
+    });
+    expect(r.status).toBe("pending");
+    expect(r.verificationLink).toBe(link);
   });
 });

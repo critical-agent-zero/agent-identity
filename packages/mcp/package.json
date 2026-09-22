@@ -1,6 +1,7 @@
 {
   "name": "@agent-identity/mcp",
   "version": "0.1.0",
+  "private": true,
   "type": "module",
   "exports": { ".": "./src/tools.ts", "./server": "./src/server.ts" },
   "bin": { "agent-identity-mcp": "./src/server.ts" },

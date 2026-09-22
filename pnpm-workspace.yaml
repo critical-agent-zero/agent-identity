@@ -1,5 +1,9 @@
 packages:
   - "packages/*"
+  # mcp-shim depends on the published @critical-labs/agent-identity by semver
+  # range; keeping it out of the workspace stops pnpm from trying to resolve
+  # that dependency during a workspace install.
+  - "!packages/mcp-shim"
   - "infra"
 allowBuilds:
   esbuild: true

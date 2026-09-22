@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "agent-identity": {
+      "command": "npx",
+      "args": ["-y", "-p", "@critical-labs/agent-identity", "agent-identity-mcp"],
+      "env": {
+        "AGENT_IDENTITY_API_URL": "https://<api-id>.execute-api.<region>.amazonaws.com"
+      }
+    }
+  }
+}

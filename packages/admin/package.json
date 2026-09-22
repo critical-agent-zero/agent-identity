@@ -1,6 +1,7 @@
 {
   "name": "@agent-identity/admin",
   "version": "0.1.0",
+  "private": true,
   "type": "module",
   "exports": { ".": "./src/commands.ts" },
   "bin": { "mailctl": "./src/mailctl.ts" },

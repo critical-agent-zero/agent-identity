@@ -40,7 +40,8 @@ describe("mergeMcpJson", () => {
     const doc = JSON.parse(mergeMcpJson(undefined, { apiUrl: "https://api", requireGithub: false }));
     expect(doc.mcpServers["agent-identity"]).toEqual({
       command: "npx",
-      args: ["agent-identity-mcp"],
+      // scope-qualified: bare "agent-identity-mcp" resolves to a third-party npm package
+      args: ["-y", "-p", "@critical-labs/agent-identity", "agent-identity-mcp"],
       env: { AGENT_IDENTITY_API_URL: "https://api" },
     });
   });

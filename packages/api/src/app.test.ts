@@ -112,6 +112,31 @@ describe("app", () => {
     expect(res.status).toBe(404);
   });
 
+  it("GET /emails/:id surfaces auth verdicts read-only", async () => {
+    const deps = makeDeps({
+      getEmail: vi.fn(async () => ({
+        id: "01ABC", from: "a", subject: "s", receivedAt: "t",
+        text: "hi", links: [], auth: { spf: "FAIL", dkim: "PASS", dmarc: "GRAY" },
+      })) as never,
+    });
+    const app = createApp(deps);
+    const res = await app.request("/emails/01ABC", signed("GET", "/emails/01ABC"));
+    const body = await res.json();
+    expect(body.auth).toEqual({ spf: "FAIL", dkim: "PASS", dmarc: "GRAY" });
+  });
+
+  it("GET /emails/:id omits auth for records stored before verdict capture", async () => {
+    const deps = makeDeps({
+      getEmail: vi.fn(async () => ({
+        id: "01ABC", from: "a", subject: "s", receivedAt: "t", text: "hi", links: [],
+      })) as never,
+    });
+    const app = createApp(deps);
+    const res = await app.request("/emails/01ABC", signed("GET", "/emails/01ABC"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).not.toHaveProperty("auth");
+  });
+
   it("GET /emails/:id reads through bodyS3Key overflow", async () => {
     const deps = makeDeps({
       getEmail: vi.fn(async () => ({
