@@ -1,5 +1,7 @@
 # @critical-labs/agent-identity
 
+**This is self-hosted software.** Before this package can do anything you deploy your own AWS SES backend — or obtain an API URL and fleet key from an operator already running one. See the [deploy docs](https://github.com/critical-labs/agent-identity#deploy-operator) for the CDK stack and setup steps.
+
 Persistent, verifiable identities for AI agents. Each identity gets an Ed25519 keypair and a receive-only email mailbox (`<id>@<your-domain>`). An MCP server claims one session-scoped identity from a machine-local pool on startup and exposes it through five tools. A setup CLI walks a consuming repo through backend wiring, pool provisioning, and `.mcp.json` configuration in one interactive session.
 
 ## Install & set up (consuming repo)

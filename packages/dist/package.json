@@ -2,19 +2,44 @@
   "name": "@critical-labs/agent-identity",
   "version": "0.1.0",
   "description": "Persistent, verifiable identities for AI agents: email mailbox, MCP server, session identity pool, and setup CLI",
+  "keywords": [
+    "ai-agents",
+    "agent",
+    "identity",
+    "email",
+    "mailbox",
+    "mcp",
+    "mcp-server",
+    "ses",
+    "claude"
+  ],
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/critical-labs/agent-identity.git" },
+  "author": "Critical Labs",
+  "homepage": "https://github.com/critical-labs/agent-identity#readme",
+  "bugs": { "url": "https://github.com/critical-labs/agent-identity/issues" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/critical-labs/agent-identity.git",
+    "directory": "packages/dist"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./server": "./dist/server.js"
+  },
   "bin": {
     "agent-identity": "./dist/cli.js",
     "agent-identity-mcp": "./dist/server.js"
   },
   "files": ["dist", "skill", "README.md"],
   "engines": { "node": ">=20" },
-  "scripts": { "build": "tsup" },
+  "publishConfig": { "access": "public" },
+  "scripts": {
+    "build": "tsup",
+    "prepack": "tsup && node check-dts.mjs"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "commander": "^12.1.0",
