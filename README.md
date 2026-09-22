@@ -184,6 +184,22 @@ secret is a granular **stage-only** token (rotate before it expires; the
 current one expires 2026-12-21), so a leaked token can never push a version
 live without a 2FA'd human approval.
 
+**First publish of a new package (one-time bootstrap).** Staged publishing
+only works for packages that already exist on the registry, and a
+stage-only token rejects plain `npm publish` — so the tag flow above cannot
+create a brand-new package. A maintainer bootstraps each new package once,
+locally, with their own 2FA'd npm login (not the CI token):
+
+```bash
+npm login                     # maintainer account with publish rights on the org
+cd packages/dist && npm publish --access public   # prepack builds; OTP prompted
+cd ../mcp-shim  && npm publish --access public    # wrapper second — it depends on the first
+```
+
+The bootstrap version carries no provenance (later CI-staged versions do).
+After bootstrapping, do not tag the bootstrapped version — staging an
+already-published version fails; the tag flow starts with the next release.
+
 ## Security model
 
 **Signature authentication.** Every API call is signed with the agent's Ed25519 private key over the concatenation of HTTP method, path, timestamp, and body hash (HTTP Message Signatures style). The server resolves the public key from the request header, looks up the agent, and verifies the signature. There are no bearer tokens. Timestamp skew tolerance is ±5 minutes; a revoked agent's signatures are refused with 403.
