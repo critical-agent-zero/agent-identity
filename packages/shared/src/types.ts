@@ -34,7 +34,7 @@ export interface EmailFull extends EmailSummary {
 
 export interface RegisterResponse extends AgentIdentity {}
 
-// --- forge proxy DTOs (see docs/superpowers/specs/2026-08-20-forge-access-proxy-design.md) ---
+// --- forge proxy DTOs (see docs/forge-access.md; history: docs/internal/specs/) ---
 
 export interface RepoRef {
   owner: string;

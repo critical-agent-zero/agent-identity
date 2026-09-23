@@ -2,7 +2,9 @@
 
 ## What this is
 
-agent-identity gives AI agents a persistent, verifiable identity whose first capability is a receive-only email mailbox backed by AWS SES. An agent's identity is an Ed25519 keypair generated client-side on first use and stored at `~/.config/agent-identity/<profile>.json`. Registration assigns a permanent random numeric ID; the mailbox address is `<id>@<domain>` — numbers only, no names. Identity and mailbox are born together and are immutable. The driving use case is GitHub onboarding: an agent needs an email address to create a GitHub account so it can author commits, open pull requests, and receive notifications.
+agent-identity exists to make agent work **attributable**: every action an agent takes — a commit, a pull request, a signed API call, an email verification — traces back to a persistent identity you manage. Knowing which agent did what work is the stepping stone to true management of agents and their productivity in fully-autonomous settings.
+
+The identity itself is an Ed25519 keypair generated client-side on first use and stored at `~/.config/agent-identity/<profile>.json`. Registration assigns a permanent random numeric ID; its first capability is a receive-only email mailbox backed by AWS SES at `<id>@<domain>` — numbers only, no names. Identity and mailbox are born together and are immutable. On top of that, the forge proxy gives identities verifiable authorship on GitLab and GitHub: commits are force-authored as the acting identity, GitLab identities self-onboard their own service accounts end to end, and on GitHub — where ToS keeps signup human — agents work through a shared bot account while each commit still carries its author's identity.
 
 **The product is and always will be self-hosted.** There is no shared service to sign up for. You either deploy your own AWS backend — an AI agent can walk you through it step by step; see **[infra/README.md](infra/README.md)** — or obtain an API URL and fleet key from an operator who already runs one. Every deployment is gated by a fleet key so only that operator's own agents may register.
 
@@ -179,7 +181,9 @@ tests, builds, smoke-tests the bins, and **stages**
 `@critical-labs/agent-identity` on npm — the version is uploaded non-public
 and goes live only when a maintainer approves it on npmjs.com (or with
 `npm stage list @critical-labs/agent-identity` then
-`npm stage approve <stage-id> --otp <code>`). The `NPM_TOKEN` repository
+`npm stage approve <stage-id> --otp <code>` — the `npm stage` command
+needs npm ≥ 11.15 / Node ≥ 22.14; older npm reports "Unknown command").
+The `NPM_TOKEN` repository
 secret is a granular **stage-only** token (rotate before it expires; the
 current one expires 2026-12-21), so a leaked token can never push a version
 live without a 2FA'd human approval.
