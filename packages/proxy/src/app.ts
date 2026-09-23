@@ -1,7 +1,7 @@
 import {
   signatureAuth, type AgentRecord, type AgentsRepo, type NoncesRepo,
 } from "@agent-identity/api";
-import type { ActivityEvent } from "@agent-identity/shared";
+import { sanitizeAttestedEvent, type ActivityEvent } from "@agent-identity/shared";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import {
@@ -79,10 +79,14 @@ export function createProxyApp(deps: ProxyDeps): Hono {
       audit({ ...base, outcome: "ok", latencyMs: Date.now() - started });
       if (attest && deps.activity) {
         try {
-          await deps.activity.putEvent({
+          // Central character/length defense: route attestations embed
+          // request strings (branch, repo) that forges accept with arbitrary
+          // non-ASCII and unbounded length. Sanitizing here — not per route —
+          // means no route can forget it.
+          await deps.activity.putEvent(sanitizeAttestedEvent({
             agentId: g.agent.agentId, ts: new Date().toISOString(),
             class: "attested", ...attest(result),
-          });
+          }));
         } catch (ledgerErr) {
           // The forge operation already succeeded; a ledger outage must
           // never turn that success into a failure. Log and continue.

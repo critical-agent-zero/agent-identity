@@ -324,9 +324,9 @@ describe("attested email_received events", () => {
     return { deps, putEvent };
   };
 
-  it("writes an attested event carrying ONLY the sender domain on delivery", async () => {
+  it("writes an attested event carrying ONLY the sender domain on authenticated delivery", async () => {
     const { deps, putEvent } = withLedger();
-    await processRecord(sesRecord() as never, deps);
+    await processRecord(sesRecord({ dkimVerdict: { status: "PASS" } }) as never, deps);
     expect(putEvent).toHaveBeenCalledTimes(1);
     const event = putEvent.mock.calls[0][0];
     expect(event).toEqual(expect.objectContaining({
@@ -339,6 +339,21 @@ describe("attested email_received events", () => {
     expect(json).not.toContain("hello");
     expect(json).not.toContain("a@b.c");
     expect(event).not.toHaveProperty("subject");
+  });
+
+  it("writes the event when DMARC alone passes", async () => {
+    const { deps, putEvent } = withLedger();
+    await processRecord(sesRecord({ dmarcVerdict: { status: "PASS" } }) as never, deps);
+    expect(putEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes NO event when no authentication verdict passes (fail-open delivery, no attested provenance)", async () => {
+    // Missing verdicts (self-hoster with scanning disabled) deliver the mail
+    // but must not mint a permanent attested row.
+    const { deps, putEvent } = withLedger();
+    await processRecord(sesRecord() as never, deps);
+    expect(deps.emails.putEmail).toHaveBeenCalled();
+    expect(putEvent).not.toHaveBeenCalled();
   });
 
   it("writes NO event for unsolicited (non-allowlisted) mail", async () => {
@@ -361,7 +376,8 @@ describe("attested email_received events", () => {
     const putEvent = vi.fn(async () => { throw new Error("ddb down"); });
     const deps: IngestDeps = { ...makeDeps(), activity: { putEvent } };
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    await expect(processRecord(sesRecord() as never, deps)).resolves.toBeUndefined();
+    const record = sesRecord({ dkimVerdict: { status: "PASS" } });
+    await expect(processRecord(record as never, deps)).resolves.toBeUndefined();
     expect(deps.emails.putEmail).toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalled();
     errorSpy.mockRestore();

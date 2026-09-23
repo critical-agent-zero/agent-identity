@@ -149,10 +149,13 @@ export function createApp(deps: Deps): Hono {
     }
   });
 
-  // Viewer-key routes. Events were redacted at write time (email events carry
-  // sender domains only; claimed text was sanitized) and the repo maps an
-  // explicit field allowlist, so no addresses, keys, or capability grants
-  // beyond the roster's own capability list can appear here.
+  // Viewer-key routes. Events were redacted and sanitized at write time:
+  // email events carry authenticated sender domains only, claimed text is
+  // sanitized+capped here, and attested summaries/details/refs get the same
+  // character-strip and length cap at their central writers (proxy run(),
+  // ingest). The repo maps an explicit field allowlist, so no addresses,
+  // keys, or capability grants beyond the roster's own capability list can
+  // appear here.
   app.get("/fleet/activity", async (c) => {
     const limitRaw = c.req.query("limit");
     const result = await deps.activity.listFleetEvents({

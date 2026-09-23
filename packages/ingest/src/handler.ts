@@ -1,6 +1,6 @@
 import type { ActivityRepo, AgentsRepo, EmailsRepo } from "@agent-identity/api";
 import {
-  matchesSenderDomain, sanitizeMailText, senderDomain,
+  matchesSenderDomain, sanitizeAttestedEvent, sanitizeMailText, senderDomain,
   type AuthVerdictStatus, type EmailAuthVerdicts,
 } from "@agent-identity/shared";
 import type { SESEventRecord, SESReceipt } from "aws-lambda";
@@ -93,16 +93,24 @@ export async function processRecord(record: SESEventRecord, deps: IngestDeps): P
     // Attested ledger event for delivered, allowlisted mail only — never for
     // quarantined (returned above) or unsolicited mail. The event carries the
     // sender DOMAIN alone: no subject, no body, no full address.
-    if (!unsolicited && deps.activity) {
+    //
+    // Delivery above is fail-open by design (only explicit FAIL verdicts
+    // stop mail), which is an acceptable trade for a flagged mailbox — but a
+    // PERMANENT attested row is manufactured provenance, so it additionally
+    // demands a positive authentication verdict (DKIM or DMARC PASS). An
+    // unauthenticated (all-GRAY) spoof of an allowlisted domain still
+    // delivers; it never mints attested provenance.
+    const senderAuthenticated = auth?.dkim === "PASS" || auth?.dmarc === "PASS";
+    if (!unsolicited && senderAuthenticated && deps.activity) {
       const domain = senderDomain(parsed.from);
       if (domain) {
         try {
-          await deps.activity.putEvent({
+          await deps.activity.putEvent(sanitizeAttestedEvent({
             agentId: agent.agentId, ts: mail.timestamp, class: "attested",
             type: "email_received",
             summary: `email received from ${domain}`,
             detail: { senderDomain: domain },
-          });
+          }));
         } catch (error) {
           // The mail is stored; a ledger outage must not fail delivery.
           console.error("ingest: failed to write activity event", {

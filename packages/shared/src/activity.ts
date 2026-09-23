@@ -47,9 +47,43 @@ export interface AgentStatusView extends AgentStatus {
   stale: boolean;
 }
 
+// Activity text fields (status labels, task notes, attested summaries and
+// detail values) are single-line by nature — unlike mail bodies, they have
+// no legitimate multi-line use. sanitizeMailText deliberately keeps \n and
+// \t for mail; here a kept newline would let stored text fabricate an extra
+// feed row in any line-oriented rendering (terminal dashboards, logs), so
+// runs of \n/\t collapse to a single space. (\r is already stripped by
+// sanitizeMailText's control-character class.)
+const LINE_BREAKS_RE = /[\n\t]+/g;
+
 // Same storage-layer character defense as stored mail (ANSI/C1, zero-width,
-// bidi overrides), then the hard length cap. Sanitize FIRST so stripped
-// characters cannot be used to smuggle length past the cap.
+// bidi overrides), collapsed to a single line, then the hard length cap.
+// Sanitize FIRST so stripped characters cannot smuggle length past the cap.
 export function sanitizeActivityText(text: string, max: number): string {
-  return sanitizeMailText(text).slice(0, max);
+  return sanitizeMailText(text).replace(LINE_BREAKS_RE, " ").slice(0, max);
+}
+
+// Attested events embed strings that agents (branch and repo names) or
+// outside senders (mail domains) ultimately control; forges allow arbitrary
+// non-ASCII and unbounded length in refnames. Every attested writer (the
+// proxy's central run() write, ingest) must pass its event through this
+// helper so no individual route can forget the defense: the same character
+// stripping as claimed text plus a hard length cap, applied to the summary,
+// every string detail value, and the ref.
+export const ATTESTED_TEXT_MAX = 500;
+
+export function sanitizeAttestedEvent(event: ActivityEvent): ActivityEvent {
+  const clean = (v: string) => sanitizeActivityText(v, ATTESTED_TEXT_MAX);
+  return {
+    ...event,
+    summary: clean(event.summary),
+    ...(event.detail !== undefined
+      ? {
+          detail: Object.fromEntries(Object.entries(event.detail).map(
+            ([key, value]) => [key, typeof value === "string" ? clean(value) : value],
+          )),
+        }
+      : {}),
+    ...(event.ref !== undefined ? { ref: clean(event.ref) } : {}),
+  };
 }

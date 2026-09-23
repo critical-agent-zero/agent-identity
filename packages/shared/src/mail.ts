@@ -23,7 +23,14 @@ export function senderDomain(from: string): string | undefined {
   const at = addr.lastIndexOf("@");
   if (at < 0) return undefined;
   const domain = addr.slice(at + 1).toLowerCase();
-  return domain || undefined;
+  if (!domain) return undefined;
+  // A "domain" containing the stripped character class (bidi overrides,
+  // zero-width, C0/C1 controls) or any whitespace is not a real mail domain
+  // — it is a lookalike like `evil<RLO><ZWSP>.github.com` built to
+  // suffix-match an allowlisted domain. Fail closed: such mail can never
+  // count as allowlisted nor reach an attested email_received event.
+  if (sanitizeMailText(domain) !== domain || /\s/.test(domain)) return undefined;
+  return domain;
 }
 
 // Exact domain or subdomain, matched on a label boundary: mail.github.com

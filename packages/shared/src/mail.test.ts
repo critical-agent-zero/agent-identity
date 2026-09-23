@@ -35,6 +35,14 @@ describe("senderDomain", () => {
     expect(senderDomain('"GitHub, Inc." <noreply@github.com>')).toBe("github.com");
     expect(senderDomain('"a <b@c.d>" <noreply@github.com>')).toBe("github.com");
   });
+
+  it("fails closed on a domain carrying injection-class characters or whitespace", () => {
+    // Bidi/zero-width lookalikes built to suffix-match an allowlisted domain.
+    expect(senderDomain(`<x@evil${cp(0x202e)}${cp(0x200b)}.github.com>`)).toBeUndefined();
+    expect(senderDomain(`<x@evil${ESC}.github.com>`)).toBeUndefined();
+    expect(senderDomain(`<x@evil${TAB}.github.com>`)).toBeUndefined();
+    expect(senderDomain("<x@evil .github.com>")).toBeUndefined();
+  });
 });
 
 describe("matchesSenderDomain", () => {
@@ -45,6 +53,7 @@ describe("matchesSenderDomain", () => {
 
   it("rejects lookalike suffixes and display-name spoofing", () => {
     expect(matchesSenderDomain("<noreply@evilgithub.com>", "github.com")).toBe(false);
+    expect(matchesSenderDomain(`<x@evil${cp(0x202e)}${cp(0x200b)}.github.com>`, "github.com")).toBe(false);
     expect(matchesSenderDomain("noreply@github.com <x@evil.example>", "github.com")).toBe(false);
     expect(matchesSenderDomain("no address here", "github.com")).toBe(false);
   });
