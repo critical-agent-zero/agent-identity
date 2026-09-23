@@ -63,6 +63,32 @@ main{display:grid;grid-template-columns:minmax(300px,380px) 1fr;gap:0;min-height
 .empty{color:var(--faint);padding:24px 0}
 footer{padding:14px 22px;border-top:1px solid var(--line);color:var(--faint);font-size:11.5px}
 footer b{color:var(--dim)}
+/* Mail panel (keyed operator mode only) */
+.mailbtn{color:var(--green);font-size:11px;cursor:pointer;margin-top:6px;display:inline-block}
+.mailbtn:hover{text-decoration:underline}
+.evmail{color:var(--green);font-size:12px;cursor:pointer}
+.evmail:hover{text-decoration:underline}
+#mail{position:fixed;top:0;right:0;bottom:0;width:min(620px,100vw);background:var(--panel);border-left:1px solid var(--line);box-shadow:-6px 0 22px rgba(35,42,38,.14);z-index:10;display:flex;flex-direction:column}
+#mail[hidden]{display:none}
+#mailhead{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+#mailhead .sect{margin:0}
+#redactnote{font-size:10px;padding:2px 8px;border:1px solid var(--amber);border-radius:999px;color:var(--amber);white-space:nowrap}
+#mailnav{margin-left:auto;display:flex;gap:8px}
+#mailnav button{background:transparent;border:1px solid var(--line);border-radius:6px;color:var(--dim);font:12px var(--mono);padding:4px 10px;cursor:pointer}
+#mailnav button:hover{border-color:var(--green);color:var(--text)}
+#maillist,#mailbody{overflow:auto;padding:12px 16px;flex:1}
+.mailrow{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer;background:var(--panel)}
+.mailrow:hover{border-color:var(--green);background:var(--panel2)}
+.mrow1{display:flex;gap:10px;align-items:baseline}
+.mfrom{font-weight:600;font-size:13px;overflow-wrap:anywhere}
+.mts{color:var(--faint);font-size:11px;margin-left:auto;white-space:nowrap}
+.msubj{color:var(--dim);font-size:12.5px;margin-top:4px;overflow-wrap:anywhere}
+.mflags{margin-top:6px;display:flex;gap:5px;flex-wrap:wrap}
+.mflag{font-size:10px;padding:2px 7px;border:1px solid var(--red);border-radius:999px;color:var(--red)}
+.mtext{white-space:pre-wrap;overflow-wrap:anywhere;font:12.5px/1.55 var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px;margin:10px 0}
+.mlink{color:var(--dim);font-size:12px;overflow-wrap:anywhere;padding:4px 0;border-bottom:1px dashed var(--line)}
+#mailbody details{margin-top:10px}
+#mailbody summary{color:var(--faint);font-size:11px;cursor:pointer}
 </style>
 </head>
 <body>
@@ -84,6 +110,18 @@ footer b{color:var(--dim)}
   <div id="roster"><div class="sect">Roster</div><div id="agents"></div></div>
   <div id="feed"><div class="sect" id="feedtitle">Activity — all agents</div><div id="events"></div></div>
 </main>
+<aside id="mail" hidden>
+  <div id="mailhead">
+    <span class="sect" id="mailtitle">Mail</span>
+    <span id="redactnote">operator view — addresses redacted</span>
+    <span id="mailnav">
+      <button id="mailback" hidden>← list</button>
+      <button id="mailclose">✕ close</button>
+    </span>
+  </div>
+  <div id="maillist"></div>
+  <div id="mailbody" hidden></div>
+</aside>
 <footer hidden>
   <b>✓ attested</b> events were witnessed by infrastructure (the forge proxy, mail ingest) and cannot be written by agents.
   <b style="color:var(--claim)">self-reported</b> events are the agent's own signed account of itself.
@@ -93,7 +131,7 @@ footer b{color:var(--dim)}
 "use strict";
 // All server-derived strings are inserted via textContent — never innerHTML.
 const $ = (id) => document.getElementById(id);
-const state = { api: "", key: "", pub: false, sel: null, timer: 0 };
+const state = { api: "", key: "", pub: false, sel: null, timer: 0, mailCounts: {}, mailAgent: null };
 
 const qs = new URLSearchParams(location.search);
 const frag = new URLSearchParams(location.hash.replace(/^#/, ""));
@@ -152,6 +190,13 @@ function renderAgents(list) {
     }
     card.append(el("div", "counts",
       (a.counts?.attested ?? 0) + " attested · " + (a.counts?.claimed ?? 0) + " self-reported"));
+    if (!state.pub) {
+      // Keyed operator mode only: the public tier has no mail surface.
+      const mb = el("span", "mailbtn",
+        (state.mailCounts[a.agentId] || 0) + " mail ▸");
+      mb.addEventListener("click", (ev) => { ev.stopPropagation(); openMail(a.agentId); });
+      card.append(mb);
+    }
     card.addEventListener("click", () => {
       state.sel = state.sel === a.agentId ? null : a.agentId;
       refresh();
@@ -190,6 +235,11 @@ function renderEvents(list) {
     body.append(el("div", "sum", e.summary || ""));
     const dual = evWho(e);
     if (dual) body.append(dual);
+    if (!state.pub && e.type === "email_received" && e.agentId) {
+      const vm = el("span", "evmail", "view mail ▸");
+      vm.addEventListener("click", () => openMail(e.agentId));
+      body.append(vm);
+    }
     if (e.ref && /^https:\/\/(github\.com|gitlab\.com)\//.test(e.ref)) {
       const a = el("a", "", "receipt ↗");
       a.href = e.ref; a.target = "_blank"; a.rel = "noopener";
@@ -202,11 +252,111 @@ function renderEvents(list) {
   if (!rows.length) box.append(el("div", "empty", "No activity yet."));
 }
 
+// --- Mail panel (keyed operator mode only) -------------------------------
+// Everything from mail is untrusted: all rendering below is textContent, and
+// links from mail bodies are rendered as TEXT, never as anchors — the
+// operator copies one deliberately or not at all.
+function mailFlags(m) {
+  const bad = [];
+  if (m.unsolicited) bad.push("unsolicited");
+  for (const k of ["spf", "dkim", "dmarc"]) {
+    if (m.auth && m.auth[k] === "FAIL") bad.push(k + " fail");
+  }
+  if (!bad.length) return null;
+  const w = el("div", "mflags");
+  for (const b of bad) w.append(el("span", "mflag", b));
+  return w;
+}
+
+async function openMail(agentId) {
+  if (state.pub) return; // no mail affordances — and no mail calls — in public mode
+  state.mailAgent = agentId;
+  $("mail").hidden = false;
+  $("mailbody").hidden = true;
+  $("mailback").hidden = true;
+  const box = $("maillist");
+  box.hidden = false;
+  $("mailtitle").textContent = "Mail — agent " + agentId;
+  box.replaceChildren(el("div", "empty", "Loading…"));
+  try {
+    const data = await call("/fleet/emails/" + encodeURIComponent(agentId));
+    box.replaceChildren();
+    for (const m of data.emails || []) {
+      const row = el("div", "mailrow");
+      const r1 = el("div", "mrow1");
+      r1.append(el("span", "mfrom", m.from || "(unknown sender)"));
+      r1.append(el("span", "mts", fmtTs(m.receivedAt)));
+      row.append(r1);
+      row.append(el("div", "msubj", m.subject || "(no subject)"));
+      const flags = mailFlags(m);
+      if (flags) row.append(flags);
+      row.addEventListener("click", () => openMailBody(agentId, m.id));
+      box.append(row);
+    }
+    if (!(data.emails || []).length) box.append(el("div", "empty", "No mail."));
+  } catch (err) {
+    box.replaceChildren(el("div", "empty", "mail load failed: " + err.message));
+  }
+}
+
+async function openMailBody(agentId, id) {
+  $("maillist").hidden = true;
+  $("mailback").hidden = false;
+  const box = $("mailbody");
+  box.hidden = false;
+  box.replaceChildren(el("div", "empty", "Loading…"));
+  try {
+    const m = await call("/fleet/emails/" + encodeURIComponent(agentId) +
+      "/" + encodeURIComponent(id));
+    box.replaceChildren();
+    const r1 = el("div", "mrow1");
+    r1.append(el("span", "mfrom", m.from || "(unknown sender)"));
+    r1.append(el("span", "mts", fmtTs(m.receivedAt)));
+    box.append(r1);
+    box.append(el("div", "msubj", m.subject || "(no subject)"));
+    const flags = mailFlags(m);
+    if (flags) box.append(flags);
+    box.append(el("pre", "mtext", m.text || "(empty body)"));
+    if ((m.links || []).length) {
+      box.append(el("div", "sect", "links — shown as text, copy deliberately"));
+      for (const l of m.links) box.append(el("div", "mlink", l));
+    }
+    if (m.html) {
+      // Never rendered as markup — the raw source as inert text only.
+      const d = document.createElement("details");
+      d.append(el("summary", "", "html source (never rendered)"));
+      d.append(el("pre", "mtext", m.html));
+      box.append(d);
+    }
+  } catch (err) {
+    box.replaceChildren(el("div", "empty", "mail load failed: " + err.message));
+  }
+}
+
+function closeMail() {
+  state.mailAgent = null;
+  $("mail").hidden = true;
+}
+
+$("mailclose").addEventListener("click", closeMail);
+$("mailback").addEventListener("click", () => {
+  if (state.mailAgent) openMail(state.mailAgent);
+});
+// -------------------------------------------------------------------------
+
 async function refresh() {
   try {
     const [roster, feed] = await Promise.all([
       call(fleetBase() + "/agents"), call(fleetBase() + "/activity?limit=200"),
     ]);
+    state.mailCounts = {};
+    if (!state.pub) {
+      for (const e of feed.events || feed) {
+        if (e.type === "email_received" && e.agentId) {
+          state.mailCounts[e.agentId] = (state.mailCounts[e.agentId] || 0) + 1;
+        }
+      }
+    }
     renderAgents(roster.agents || roster);
     renderEvents(feed.events || feed);
     $("meta").textContent =
@@ -220,6 +370,7 @@ async function refresh() {
 
 async function connect(pub) {
   state.pub = pub === true;
+  closeMail(); // public mode renders no mail affordances and keeps none open
   state.api = $("in-api").value.trim();
   state.key = state.pub ? "" : $("in-key").value.trim();
   if (!state.api || (!state.pub && !state.key)) {
