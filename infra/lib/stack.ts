@@ -1,7 +1,7 @@
 import {
   CfnOutput, Duration, RemovalPolicy, Stack, type StackProps,
 } from "aws-cdk-lib";
-import { CfnStage, HttpApi, HttpMethod } from "aws-cdk-lib/aws-apigatewayv2";
+import { CfnStage, CorsHttpMethod, HttpApi, HttpMethod } from "aws-cdk-lib/aws-apigatewayv2";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
 import { PolicyStatement } from "aws-cdk-lib/aws-iam";
@@ -105,6 +105,15 @@ export class AgentIdentityStack extends Stack {
 
     const httpApi = new HttpApi(this, "HttpApi", {
       defaultIntegration: new HttpLambdaIntegration("ApiInt", apiFn),
+      // Browser surfaces (the fleet dashboard, the public fleet view) fetch
+      // cross-origin; x-viewer-key on GETs triggers preflight. Writes stay
+      // browser-hostile on purpose: only GET is allowed cross-origin.
+      corsPreflight: {
+        allowOrigins: ["*"],
+        allowMethods: [CorsHttpMethod.GET],
+        allowHeaders: ["content-type", "x-viewer-key"],
+        maxAge: Duration.hours(1),
+      },
     });
     // The L2 HttpApi's auto-created $default stage exposes no throttle prop;
     // set it on the L1. Applies to every route, /forge/* included.

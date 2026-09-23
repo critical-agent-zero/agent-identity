@@ -23,6 +23,12 @@ describe("makeFleetHandler", () => {
     expect(out.body).toContain("fleet");
   });
 
+  it("serves the page when a query string is attached (auto-connect URLs)", () => {
+    const { res, out } = fakeRes();
+    handler({ method: "GET", url: "/?api=https://x.example" } as never, res as never);
+    expect(out.status).toBe(200);
+  });
+
   it("404s every other path (static single page, no surprises)", () => {
     const { res, out } = fakeRes();
     handler({ method: "GET", url: "/etc/passwd" } as never, res as never);

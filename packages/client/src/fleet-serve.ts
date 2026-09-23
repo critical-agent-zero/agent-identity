@@ -10,7 +10,8 @@ export function makeFleetHandler(html: string) {
       res.end("method not allowed");
       return;
     }
-    if (req.url !== "/" && req.url !== "/index.html") {
+    const pathname = (req.url ?? "/").split("?")[0];
+    if (pathname !== "/" && pathname !== "/index.html") {
       res.writeHead(404, { "content-type": "text/plain" });
       res.end("not found");
       return;
