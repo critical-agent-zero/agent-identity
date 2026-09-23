@@ -71,8 +71,42 @@ export class GitlabForge implements Forge {
     return { defaultBranch: proj.default_branch, headSha: branch.commit.id };
   }
 
+  private async branchExists(project: string, branch: string, agentId: string): Promise<boolean> {
+    try {
+      await this.gl("GET",
+        `/projects/${project}/repository/branches/${encodeURIComponent(branch)}`, agentId);
+      return true;
+    } catch (err) {
+      if (err instanceof ForgeError && err.kind === "not_found") return false;
+      throw err;
+    }
+  }
+
+  /** Auto-create a missing target branch from the project's OWN default
+   *  branch (issue #93) so a fresh fork needs no raw-PAT branch setup. Runs
+   *  only inside createCommit, which the proxy policy-gates before any call. */
+  private async ensureBranch(project: string, branch: string, agentId: string): Promise<void> {
+    if (await this.branchExists(project, branch, agentId)) return;
+    const proj = await this.gl<{ default_branch: string | null }>(
+      "GET", `/projects/${project}`, agentId);
+    // An empty project (fresh fork still importing) has no default branch yet
+    // — surface the existing retryable not_found, not a new error class.
+    if (!proj.default_branch)
+      throw new ForgeError("not_found", "project has no default branch yet", 404);
+    try {
+      await this.gl("POST", `/projects/${project}/repository/branches`, agentId,
+        { branch, ref: proj.default_branch });
+    } catch (err) {
+      // The branch appeared between check and create — commit onto it as-is.
+      if (err instanceof ForgeError && (err.upstream === 400 || err.upstream === 409)
+        && /already exists/i.test(err.message)) return;
+      throw err;
+    }
+  }
+
   async createCommit(ref: RepoRef, spec: CommitSpec, actor: Author): Promise<CommitResult> {
     const p = this.project(ref);
+    await this.ensureBranch(p, spec.branch, actor.name);
     const actions = [];
     for (const f of spec.files) {
       const exists = await this.fileExists(p, f.path, spec.branch, actor.name);
