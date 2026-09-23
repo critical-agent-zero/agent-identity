@@ -1,5 +1,5 @@
 import {
-  fingerprint, projectPublicEvent, publicView, sanitizeActivityText,
+  fingerprint, projectPublicEvent, publicView, redactAddress, sanitizeActivityText,
   STATUS_LABEL_MAX, STATUS_STATES, TASK_NOTE_MAX,
   type ActivityEvent, type AgentStatusState,
 } from "@agent-identity/shared";
@@ -299,6 +299,65 @@ export function createApp(deps: Deps, now: () => number = Date.now): Hono {
 
   app.get("/fleet/agents", async (c) => {
     return c.json({ agents: await deps.activity.fleetRoster() });
+  });
+
+  // Operator mail reading (#107) — inside the viewer-key wall above (these
+  // live under /fleet/, so the middleware already gates them; /fleet/public
+  // mounts no mail route, so no unauthenticated mail surface exists). The
+  // invariant of this surface: the agent's mailbox ADDRESS never travels.
+  // Every serialized field passes through redactAddress with the agentId
+  // from the path; a stored address field is consumed for its domain and
+  // dropped, never emitted. This IS the operator's forensic view, so
+  // unsolicited and auth-failed mail are included, flags visible.
+  app.get("/fleet/emails/:agentId", async (c) => {
+    const agentId = c.req.param("agentId");
+    const limitRaw = c.req.query("limit");
+    try {
+      const { emails, cursor } = await deps.emails.listEmails(agentId, {
+        limit: limitRaw ? Number(limitRaw) : undefined,
+        cursor: c.req.query("cursor"),
+        includeUnsolicited: true,
+        includeUnauthenticated: true,
+      });
+      const r = (s: string) => redactAddress(s, agentId);
+      // Explicit field allowlist — the mailbox address field can never ride
+      // along, and from/subject are redacted against recipient echoes.
+      return c.json({
+        emails: emails.map((e) => ({
+          id: e.id, from: r(e.from), subject: r(e.subject), receivedAt: e.receivedAt,
+          ...(e.auth !== undefined ? { auth: e.auth } : {}),
+          ...(e.unsolicited !== undefined ? { unsolicited: e.unsolicited } : {}),
+        })),
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+    } catch (err) {
+      if (err instanceof InvalidCursorError) return c.json({ error: "invalid cursor" }, 400);
+      throw err;
+    }
+  });
+
+  app.get("/fleet/emails/:agentId/:emailId", async (c) => {
+    const agentId = c.req.param("agentId");
+    const email = await deps.emails.getEmail(agentId, c.req.param("emailId"));
+    // Unknown agent and unknown email are indistinguishable by construction:
+    // both are the same storage miss, answered with one body.
+    if (!email) return c.json({ error: "not found" }, 404);
+    // A stored address field (if the storage shape ever carries one) resolves
+    // the redaction domain and is dropped — never emitted.
+    const { bodyS3Key, address, ...rest } =
+      email as typeof email & { address?: string };
+    const domain = typeof address === "string" ? address.split("@")[1] : undefined;
+    const full = bodyS3Key ? { ...rest, ...(await deps.readBody(bodyS3Key)) } : rest;
+    const r = (s: string) => redactAddress(s, agentId, domain);
+    return c.json({
+      id: full.id, from: r(full.from), subject: r(full.subject),
+      receivedAt: full.receivedAt,
+      text: r(full.text ?? ""),
+      ...(full.html !== undefined ? { html: r(full.html) } : {}),
+      links: (full.links ?? []).map(r),
+      ...(full.auth !== undefined ? { auth: full.auth } : {}),
+      ...(full.unsolicited !== undefined ? { unsolicited: full.unsolicited } : {}),
+    });
   });
 
   return app;
