@@ -4,6 +4,7 @@ import { stdin as input, stdout as output } from "node:process";
 import * as readline from "node:readline/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { disableGithub, enableGithub, resolveAdminKey } from "./admin.js";
 import { linkGithub, listPool, poolStatus } from "./claims.js";
 import { AgentIdentityClient } from "./client.js";
 import { readMachineConfig, resolveFleetKey, resolveGithubPat } from "./config.js";
@@ -89,6 +90,54 @@ github
         ...(opts.credentialRef ? { credentialRef: opts.credentialRef } : {}),
       });
       console.log(`linked ${agentId} -> github:${opts.username}`);
+    } catch (err) {
+      fail(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+github
+  .command("enable <agentId>")
+  .description("operator: grant the github capability via the admin API and record the local GitHub link")
+  .option("--api-url <url>", "API base URL (default: machine config)")
+  .option("--username <login>", "GitHub login to link (default: the profile's existing link)")
+  .option("--credential-ref <ref>", "credential reference (e.g. op://...), never a raw secret")
+  // No raw-secret flag: the admin key comes from AGENT_IDENTITY_ADMIN_KEY or
+  // ~/.config/agent-identity/admin_key — argv leaks into shell history and ps.
+  // Operator-only: never export the admin key into an agent session env.
+  .action(async (agentId: string, opts: { apiUrl?: string; username?: string; credentialRef?: string }) => {
+    const apiUrl = opts.apiUrl ?? readMachineConfig().apiUrl ?? process.env.AGENT_IDENTITY_API_URL;
+    if (!apiUrl) return fail("no API URL (pass --api-url or run: agent-identity setup)");
+    const adminKey = resolveAdminKey();
+    if (!adminKey) return fail("no admin key (set AGENT_IDENTITY_ADMIN_KEY or ~/.config/agent-identity/admin_key; mint one with: mailctl admin-key create)");
+    try {
+      const r = await enableGithub({
+        agentId, apiUrl, adminKey,
+        username: opts.username, credentialRef: opts.credentialRef,
+      });
+      console.log(`granted github capability to ${r.agentId} (capabilities: ${r.capabilities.join(", ")})`);
+      console.log(`linked ${r.agentId} -> github:${r.github.username}`);
+      if (r.address) {
+        console.log(`If ${r.address} is not yet a verified email on ${r.github.username}, finish commit attribution with:`);
+        console.log(`  agent-identity github onboard ${r.agentId}`);
+      }
+    } catch (err) {
+      fail(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+github
+  .command("disable <agentId>")
+  .description("operator: revoke the github capability via the admin API and remove the local link")
+  .option("--api-url <url>", "API base URL (default: machine config)")
+  .action(async (agentId: string, opts: { apiUrl?: string }) => {
+    const apiUrl = opts.apiUrl ?? readMachineConfig().apiUrl ?? process.env.AGENT_IDENTITY_API_URL;
+    if (!apiUrl) return fail("no API URL (pass --api-url or run: agent-identity setup)");
+    const adminKey = resolveAdminKey();
+    if (!adminKey) return fail("no admin key (set AGENT_IDENTITY_ADMIN_KEY or ~/.config/agent-identity/admin_key; mint one with: mailctl admin-key create)");
+    try {
+      const r = await disableGithub({ agentId, apiUrl, adminKey });
+      console.log(`revoked github capability from ${r.agentId} (capabilities: ${r.capabilities.join(", ") || "none"})`);
+      console.log(`removed local github link for ${r.agentId}`);
     } catch (err) {
       fail(err instanceof Error ? err.message : String(err));
     }

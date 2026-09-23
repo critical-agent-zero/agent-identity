@@ -2,7 +2,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { Command } from "commander";
-import { createFleetKey, listAgents, revokeAgent, tagAgent, untagAgent } from "./commands.js";
+import { createAdminKey, createFleetKey, listAgents, revokeAgent, tagAgent, untagAgent } from "./commands.js";
 
 const table = process.env.AGENT_IDENTITY_TABLE;
 if (!table) {
@@ -20,6 +20,18 @@ program.command("fleet-key")
     const key = await createFleetKey(ddb, table, opts.label);
     console.log("Fleet key (shown once, store it now):");
     console.log(key);
+  });
+
+program.command("admin-key")
+  .description("operator-only key gating capability admin over the API; never export it into an agent session env")
+  .command("create")
+  .option("--label <label>", "label for this key", "default")
+  .action(async (opts: { label: string }) => {
+    const key = await createAdminKey(ddb, table, opts.label);
+    console.log("Admin key (shown once, store it now):");
+    console.log(key);
+    console.log("Operator-only: put it in AGENT_IDENTITY_ADMIN_KEY or ~/.config/agent-identity/admin_key (0600).");
+    console.log("Never export it into an agent session env — it grants capability admin over every identity.");
   });
 
 const agent = program.command("agent");

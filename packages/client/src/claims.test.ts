@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   claimFromPool, claimSpecific, claimsDir, hasCapabilities, linkGithub, listPool, poolDir, poolStatus, savePoolProfile,
-  type PoolProfile,
+  unlinkGithub, type PoolProfile,
 } from "./claims.js";
 
 const base = () => mkdtempSync(join(tmpdir(), "aid-claims-"));
@@ -56,6 +56,20 @@ describe("pool primitives", () => {
 
   it("linkGithub throws a clear error for a missing profile", () => {
     expect(() => linkGithub("999999", { username: "x" }, base()))
+      .toThrow(/no pool profile named 999999/);
+  });
+
+  it("unlinkGithub removes the github block and keeps the rest", () => {
+    const dir = base();
+    savePoolProfile(profile("222222", { username: "critical-agent-two" }), dir);
+    unlinkGithub("222222", dir);
+    const saved = JSON.parse(readFileSync(join(poolDir(dir), "222222.json"), "utf8"));
+    expect(saved.github).toBeUndefined();
+    expect(saved.agentId).toBe("222222");
+  });
+
+  it("unlinkGithub throws a clear error for a missing profile", () => {
+    expect(() => unlinkGithub("999999", base()))
       .toThrow(/no pool profile named 999999/);
   });
 });
