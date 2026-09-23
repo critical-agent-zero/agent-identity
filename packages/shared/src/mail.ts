@@ -60,12 +60,19 @@ export function isPinnedLink(link: string, origin: string): boolean {
 
 // Storage-layer defense against the ANSI-injection class: C0 controls (except
 // newline U+000A and tab U+0009), DEL+C1, zero-width, and bidi-override
-// characters are stripped before mail text is persisted.
+// characters are stripped before mail text is persisted. The set also covers
+// every INVISIBLE-WHEN-RENDERED character that can be interposed inside a
+// mailbox localpart to defeat address redaction while the operator still
+// reads the intact address: soft hyphen (HTML generators insert it to wrap
+// long tokens), combining grapheme joiner, Mongolian vowel separator,
+// variation selectors (BMP and plane-14), and plane-14 tag characters.
 const STRIP_RE = new RegExp(
   `[${range(0x00, 0x08)}${range(0x0b, 0x1f)}${range(0x7f, 0x9f)}` + // C0 minus \n\t, DEL, C1
+  `${String.fromCodePoint(0x00ad)}${String.fromCodePoint(0x034f)}${String.fromCodePoint(0x180e)}` + // soft hyphen, CGJ, MVS
   `${range(0x200b, 0x200f)}${String.fromCodePoint(0x2060)}${String.fromCodePoint(0xfeff)}` + // zero-width
-  `${range(0x202a, 0x202e)}${range(0x2066, 0x2069)}]`, // bidi controls
-  "g",
+  `${range(0x202a, 0x202e)}${range(0x2066, 0x2069)}` + // bidi controls
+  `${range(0xfe00, 0xfe0f)}${range(0xe0000, 0xe007f)}${range(0xe0100, 0xe01ef)}]`, // variation selectors, tags
+  "gu",
 );
 
 export function sanitizeMailText(text: string): string {
