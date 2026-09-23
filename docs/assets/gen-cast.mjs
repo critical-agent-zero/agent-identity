@@ -53,7 +53,16 @@ out(
 );
 
 comment("# identity + mailbox minted · MCP server wired · skill installed · zero secrets in-repo", 1.4);
-out("", 3.5);
+
+// End hold before the loop restarts: ~5.5s at an idle prompt with a blinking
+// cursor (DECTCEM hide/show toggles) so readers have time to take in the
+// full transcript and the pause reads as time passing, not a frozen frame.
+out(PROMPT, 0.6);
+for (let i = 0; i < 5; i++) {
+  out("[?25l", 0.55);
+  out("[?25h", 0.55);
+}
+out("", 0.4);
 
 const header = { version: 2, width: 104, height: 28, title: "agent-identity setup" };
 writeFileSync(
