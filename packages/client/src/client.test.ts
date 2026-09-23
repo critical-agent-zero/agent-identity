@@ -22,6 +22,20 @@ describe("AgentIdentityClient", () => {
     expect(verify(msg, h.get("x-agent-signature")!, kp.publicKeySpkiBase64)).toBe(true);
   });
 
+  it("listEmails threads the opt-in flags as query params", async () => {
+    const fetchMock = makeFetch({ emails: [] });
+    const client = new AgentIdentityClient({
+      apiUrl: "https://api.example", keypair: kp, fetch: fetchMock as never,
+    });
+    await client.listEmails({ includeUnsolicited: true, includeUnauthenticated: true });
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe("https://api.example/emails?includeUnsolicited=true&includeUnauthenticated=true");
+
+    await client.listEmails({});
+    const [url2] = fetchMock.mock.calls[1] as unknown as [string];
+    expect(url2).toBe("https://api.example/emails");
+  });
+
   it("register sends fleet key header and returns identity", async () => {
     const fetchMock = makeFetch({ agentId: "482913", address: "482913@d" });
     const client = new AgentIdentityClient({

@@ -68,6 +68,13 @@ export class AgentIdentityStack extends Stack {
       ...fnDefaults,
       entry: pkg("ingest/src/handler.ts"),
       timeout: Duration.seconds(30),
+      environment: {
+        ...commonEnv,
+        // Sender domains delivered unflagged; everything else is stored with
+        // unsolicited: true. Comma-separated, subdomains match implicitly.
+        MAIL_SENDER_ALLOWLIST:
+          this.node.tryGetContext("senderAllowlist") ?? "github.com,gitlab.com",
+      },
     });
     table.grantReadWriteData(ingestFn);
     bucket.grantReadWrite(ingestFn);

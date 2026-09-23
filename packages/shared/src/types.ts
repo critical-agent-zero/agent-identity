@@ -21,6 +21,9 @@ export interface EmailSummary {
   subject: string;
   receivedAt: string;     // ISO
   auth?: EmailAuthVerdicts;
+  // Sender domain was not on the ingest allowlist. Records stored before the
+  // allowlist (field absent) are grandfathered as solicited.
+  unsolicited?: boolean;
 }
 
 export interface EmailFull extends EmailSummary {

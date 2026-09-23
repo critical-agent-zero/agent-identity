@@ -12,7 +12,8 @@ export class NoIdentityError extends Error {}
 
 export interface AgentClientLike {
   register(): Promise<AgentIdentity>;
-  listEmails(opts: { since?: string; limit?: number }): Promise<{ emails: EmailSummary[] }>;
+  listEmails(opts: { since?: string; limit?: number; includeUnauthenticated?: boolean }):
+    Promise<{ emails: EmailSummary[] }>;
   getEmail(id: string): Promise<EmailFull>;
   forgeRepo(service: string, ref: RepoRef): Promise<RepoInfo>;
   forgeCommit(service: string, ref: RepoRef, spec: CommitSpec): Promise<CommitResult>;

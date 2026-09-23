@@ -40,6 +40,10 @@ export function createApp(deps: Deps): Hono {
         since: c.req.query("since"),
         limit: limitRaw ? Number(limitRaw) : undefined,
         cursor: c.req.query("cursor"),
+        // Explicit opt-ins; anything but the literal "true" keeps the default
+        // exclusion of flagged mail.
+        includeUnsolicited: c.req.query("includeUnsolicited") === "true",
+        includeUnauthenticated: c.req.query("includeUnauthenticated") === "true",
       });
       return c.json(result);
     } catch (err) {

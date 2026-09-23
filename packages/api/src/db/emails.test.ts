@@ -79,6 +79,60 @@ describe("EmailsRepo", () => {
     expect(JSON.parse(JSON.stringify(legacy))).not.toHaveProperty("auth");
   });
 
+  it("listEmails filters out unsolicited and auth-failed mail by default", async () => {
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await repo.listEmails("482913", {});
+    const q = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(q.FilterExpression).toContain("attribute_not_exists(unsolicited)");
+    expect(q.FilterExpression).toContain("#auth.spf = :fail");
+    expect(q.ExpressionAttributeValues).toMatchObject({ ":fail": "FAIL" });
+    expect(q.ExpressionAttributeNames).toEqual({ "#auth": "auth" });
+  });
+
+  it("listEmails keeps only the auth filter with includeUnsolicited", async () => {
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await repo.listEmails("482913", { includeUnsolicited: true });
+    const q = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(q.FilterExpression).not.toContain("unsolicited");
+    expect(q.FilterExpression).toContain("#auth.dmarc = :fail");
+  });
+
+  it("listEmails keeps only the unsolicited filter with includeUnauthenticated", async () => {
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await repo.listEmails("482913", { includeUnauthenticated: true });
+    const q = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(q.FilterExpression).toBe("attribute_not_exists(unsolicited)");
+    expect(q.ExpressionAttributeNames).toBeUndefined();
+  });
+
+  it("listEmails drops the filter entirely when both flags are set", async () => {
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await repo.listEmails("482913", { includeUnsolicited: true, includeUnauthenticated: true });
+    const q = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(q.FilterExpression).toBeUndefined();
+    expect(q.ExpressionAttributeNames).toBeUndefined();
+  });
+
+  it("listEmails and getEmail carry the unsolicited flag through", async () => {
+    ddb.on(QueryCommand).resolves({
+      Items: [{ SK: "EMAIL#01ABC", from: "a@b.c", subject: "s", receivedAt: "t", unsolicited: true }],
+    });
+    const { emails } = await repo.listEmails("482913", { includeUnsolicited: true });
+    expect(emails[0].unsolicited).toBe(true);
+
+    ddb.on(GetCommand).resolves({
+      Item: { from: "a@b.c", subject: "s", receivedAt: "t", text: "hi", links: [], unsolicited: true },
+    });
+    const full = await repo.getEmail("482913", "01ABC");
+    expect(full?.unsolicited).toBe(true);
+
+    ddb.on(GetCommand).resolves({
+      Item: { from: "a@b.c", subject: "s", receivedAt: "t", text: "hi", links: [] },
+    });
+    const legacy = await repo.getEmail("482913", "01ABC");
+    expect(JSON.parse(JSON.stringify(legacy))).not.toHaveProperty("unsolicited");
+  });
+
   it("putEmail is idempotent: same messageId + receivedAt yields same id and SK", async () => {
     ddb.on(PutCommand).resolves({});
     const email = {
