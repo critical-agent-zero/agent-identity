@@ -1,8 +1,16 @@
 import {
-  canonicalString, sign, type AgentIdentity, type CommentResult, type CommitResult,
+  canonicalString, sign, type ActivityEvent, type AgentIdentity, type AgentStatusState,
+  type AgentStatusView, type CommentResult, type CommitResult,
   type CommitSpec, type EmailFull, type EmailSummary, type ForgeProvisionResult,
   type ForkResult, type Keypair, type PrResult, type PrSpec, type RepoInfo, type RepoRef,
 } from "@agent-identity/shared";
+
+/** GET /me: identity plus operator-set capabilities and, when one has been
+ *  recorded, the agent's own claimed status with server-computed freshness. */
+export interface MeResponse extends AgentIdentity {
+  capabilities?: string[];
+  status?: AgentStatusView;
+}
 
 export interface ClientOptions {
   apiUrl: string;
@@ -66,8 +74,29 @@ export class AgentIdentityClient {
       this.opts.fleetKey ? { "x-fleet-key": this.opts.fleetKey } : {});
   }
 
-  me(): Promise<AgentIdentity> {
+  me(): Promise<MeResponse> {
     return this.request("GET", "/me");
+  }
+
+  /** CLAIMED self-report: sets this agent's public status. The server stores
+   *  it as class "claimed" — it is never presented as attested. */
+  setStatus(state: AgentStatusState, label?: string): Promise<{ event: ActivityEvent }> {
+    return this.request("POST", "/activity",
+      JSON.stringify({ type: "status", state, ...(label !== undefined ? { label } : {}) }));
+  }
+
+  /** CLAIMED self-report: appends a short public task note to the ledger. */
+  reportTaskNote(note: string): Promise<{ event: ActivityEvent }> {
+    return this.request("POST", "/activity", JSON.stringify({ type: "task_note", note }));
+  }
+
+  myActivity(opts: { limit?: number; cursor?: string } = {}):
+    Promise<{ events: ActivityEvent[]; cursor?: string }> {
+    const q = new URLSearchParams();
+    if (opts.limit) q.set("limit", String(opts.limit));
+    if (opts.cursor) q.set("cursor", opts.cursor);
+    const qs = q.toString();
+    return this.request("GET", `/agents/me/activity${qs ? `?${qs}` : ""}`);
   }
 
   listEmails(opts: {

@@ -29,9 +29,38 @@ describe("mcp tools", () => {
       .toHaveBeenCalledWith(["github"]);
   });
 
-  it("identity_status reports manager status", () => {
+  it("identity_status reports manager status", async () => {
     const tools = makeTools(makeManager());
-    expect(tools.identityStatus()).toEqual(
+    expect(await tools.identityStatus()).toEqual(
+      expect.objectContaining({ held: expect.objectContaining({ name: "482913" }) }),
+    );
+  });
+
+  it("identity_status carries the server-recorded status when one exists", async () => {
+    const client = makeClient({
+      me: vi.fn(async () => ({
+        agentId: "482913", address: "482913@d", capabilities: [],
+        status: { state: "working", label: "l", updatedAt: "t", stale: false },
+      })),
+    });
+    const tools = makeTools(makeManager(client));
+    expect(await tools.identityStatus()).toEqual(expect.objectContaining({
+      recordedStatus: { state: "working", label: "l", updatedAt: "t", stale: false },
+    }));
+  });
+
+  it("identity_status reports null recordedStatus when none is set", async () => {
+    const client = makeClient({
+      me: vi.fn(async () => ({ agentId: "482913", address: "482913@d", capabilities: [] })),
+    });
+    const tools = makeTools(makeManager(client));
+    expect((await tools.identityStatus()).recordedStatus).toBeNull();
+  });
+
+  it("identity_status still answers when the API is unreachable", async () => {
+    const client = makeClient({ me: vi.fn(async () => { throw new Error("offline"); }) });
+    const tools = makeTools(makeManager(client));
+    expect(await tools.identityStatus()).toEqual(
       expect.objectContaining({ held: expect.objectContaining({ name: "482913" }) }),
     );
   });
@@ -297,5 +326,28 @@ describe("forge tools", () => {
     const r = await tools.forgeFork({ owner: "o", repo: "r" });
     expect(r).toEqual({ owner: "fork-acct", repo: "r", defaultBranch: "main" });
     expect(forgeFork).toHaveBeenCalledWith("github", { owner: "o", name: "r" });
+  });
+
+  it("set_status posts the claimed self-report through the client", async () => {
+    const setStatus = vi.fn(async () => ({ event: { type: "status" } }));
+    const tools = makeTools(managerWith({ setStatus }));
+    const r = await tools.setStatus({ state: "blocked", label: "waiting on review" });
+    expect(r).toEqual({ event: { type: "status" } });
+    expect(setStatus).toHaveBeenCalledWith("blocked", "waiting on review");
+  });
+
+  it("report_activity posts the task note through the client", async () => {
+    const reportTaskNote = vi.fn(async () => ({ event: { type: "task_note" } }));
+    const tools = makeTools(managerWith({ reportTaskNote }));
+    const r = await tools.reportActivity({ note: "opened PR #7" });
+    expect(r).toEqual({ event: { type: "task_note" } });
+    expect(reportTaskNote).toHaveBeenCalledWith("opened PR #7");
+  });
+
+  it("set_status and report_activity surface API rejections as clean error results", async () => {
+    const boom = vi.fn(async () => { throw new Error("API 400: only claimed event types"); });
+    const tools = makeTools(managerWith({ setStatus: boom, reportTaskNote: boom }));
+    expect(await tools.setStatus({ state: "working" })).toEqual({ error: "API 400: only claimed event types" });
+    expect(await tools.reportActivity({ note: "n" })).toEqual({ error: "API 400: only claimed event types" });
   });
 });

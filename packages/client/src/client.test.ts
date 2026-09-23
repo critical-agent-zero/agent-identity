@@ -182,4 +182,39 @@ describe("forge methods", () => {
     expect(JSON.parse(init.body as string)).toEqual({ owner: "o", repo: "r" });
   });
 
+  it("setStatus posts a claimed status self-report", async () => {
+    const fetchMock = makeFetch({ event: {} });
+    const client = new AgentIdentityClient({
+      apiUrl: "https://api.example", keypair: kp, fetch: fetchMock as never,
+    });
+    await client.setStatus("working", "shipping the ledger");
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.example/activity");
+    expect(JSON.parse(init.body as string)).toEqual({
+      type: "status", state: "working", label: "shipping the ledger",
+    });
+  });
+
+  it("reportTaskNote posts a claimed task_note self-report", async () => {
+    const fetchMock = makeFetch({ event: {} });
+    const client = new AgentIdentityClient({
+      apiUrl: "https://api.example", keypair: kp, fetch: fetchMock as never,
+    });
+    await client.reportTaskNote("finished tests");
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.example/activity");
+    expect(JSON.parse(init.body as string)).toEqual({ type: "task_note", note: "finished tests" });
+  });
+
+  it("myActivity reads the signed own-feed with cursor params", async () => {
+    const fetchMock = makeFetch({ events: [], cursor: "next" });
+    const client = new AgentIdentityClient({
+      apiUrl: "https://api.example", keypair: kp, fetch: fetchMock as never,
+    });
+    const r = await client.myActivity({ limit: 5, cursor: "abc" });
+    expect(r).toEqual({ events: [], cursor: "next" });
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe("https://api.example/agents/me/activity?limit=5&cursor=abc");
+  });
+
 });

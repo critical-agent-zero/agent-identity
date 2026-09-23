@@ -1,5 +1,8 @@
-import { isPinnedLink, matchesSenderDomain, type EmailSummary } from "@agent-identity/shared";
-import type { ClaimManager } from "./claim-manager.js";
+import {
+  isPinnedLink, matchesSenderDomain,
+  type AgentStatusState, type AgentStatusView, type EmailSummary,
+} from "@agent-identity/shared";
+import type { ClaimManager, IdentityStatus } from "./claim-manager.js";
 
 export interface WaitArgs {
   fromContains?: string;
@@ -32,8 +35,37 @@ export function makeTools(manager: ClaimManager) {
       return manager.ensureIdentity(args.require);
     },
 
-    identityStatus() {
-      return manager.status();
+    // Local claim state plus, when reachable, the agent's own status as the
+    // server recorded it (null when nothing was ever reported).
+    async identityStatus(): Promise<IdentityStatus & { recordedStatus?: AgentStatusView | null }> {
+      const base = manager.status();
+      if (!base.held) return base;
+      try {
+        const me = await manager.client().me();
+        return { ...base, recordedStatus: me.status ?? null };
+      } catch {
+        // Offline or pre-upgrade server: local status still answers.
+        return base;
+      }
+    },
+
+    // Claimed self-reports. These are PUBLIC entries on the agent's own
+    // permanent record; the API stores them as class "claimed" and the fleet
+    // UI labels them self-reported — they can never masquerade as attested.
+    async setStatus(args: { state: AgentStatusState; label?: string }) {
+      try {
+        return await manager.client().setStatus(args.state, args.label);
+      } catch (err) {
+        return { error: (err as Error).message };
+      }
+    },
+
+    async reportActivity(args: { note: string }) {
+      try {
+        return await manager.client().reportTaskNote(args.note);
+      } catch (err) {
+        return { error: (err as Error).message };
+      }
     },
 
     listEmails(opts: { since?: string; limit?: number; includeUnauthenticated?: boolean }) {

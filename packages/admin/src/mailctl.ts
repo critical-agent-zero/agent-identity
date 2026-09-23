@@ -2,7 +2,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { Command } from "commander";
-import { createAdminKey, createFleetKey, listAgents, revokeAgent, tagAgent, untagAgent } from "./commands.js";
+import { createAdminKey, createFleetKey, createViewerKey, listAgents, revokeAgent, tagAgent, untagAgent } from "./commands.js";
 
 const table = process.env.AGENT_IDENTITY_TABLE;
 if (!table) {
@@ -34,6 +34,15 @@ program.command("admin-key")
     console.log("Never export it into an agent session env — it grants capability admin over every identity.");
     console.log("Note: agent sessions running as the same OS user can read that file (0600 does not stop them).");
     console.log("On machines that run agents, prefer the env var in an operator-only shell or a separate operator OS user.");
+  });
+
+program.command("viewer-key")
+  .command("create")
+  .option("--label <label>", "label for this key", "default")
+  .action(async (opts: { label: string }) => {
+    const key = await createViewerKey(ddb, table, opts.label);
+    console.log("Viewer key (read-only fleet dashboard access; shown once, store it now):");
+    console.log(key);
   });
 
 const agent = program.command("agent");

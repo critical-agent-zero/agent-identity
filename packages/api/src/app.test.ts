@@ -33,11 +33,22 @@ function makeDeps(overrides: Record<string, unknown> = {}): Deps {
       verifyAdminKey: vi.fn(async (k: string) => k === "adm-good"),
       addCapability: vi.fn(async () => ["github"]),
       removeCapability: vi.fn(async () => []),
+
+      verifyViewerKey: vi.fn(async (k: string) => k === "vk"),
       ...overrides,
     } as never,
     emails: {
       listEmails: vi.fn(async () => ({ emails: [] })),
       getEmail: vi.fn(async () => undefined),
+      ...overrides,
+    } as never,
+    activity: {
+      putEvent: vi.fn(async () => "id"),
+      listEvents: vi.fn(async () => ({ events: [] })),
+      setStatus: vi.fn(async () => {}),
+      getStatus: vi.fn(async () => undefined),
+      listFleetEvents: vi.fn(async () => ({ events: [] })),
+      fleetRoster: vi.fn(async () => []),
       ...overrides,
     } as never,
     nonces: permissiveNonces,
@@ -274,5 +285,209 @@ describe("admin capability routes", () => {
     const app = createApp(makeDeps());
     const res = await app.request("/me", { headers: { "x-admin-key": "adm-good" } });
     expect(res.status).toBe(401);
+  });
+});
+
+const cp = (...codes: number[]) => String.fromCodePoint(...codes);
+
+const postActivity = (app: ReturnType<typeof createApp>, body: unknown) => {
+  const payload = JSON.stringify(body);
+  return app.request("/activity", signed("POST", "/activity", payload));
+};
+
+describe("POST /activity (claimed self-reports)", () => {
+  it("stores a status event as claimed and overwrites the STATUS row", async () => {
+    const deps = makeDeps();
+    const app = createApp(deps);
+    const res = await postActivity(app, { type: "status", state: "working", label: "shipping" });
+    expect(res.status).toBe(201);
+    const putEvent = (deps.activity as never as { putEvent: ReturnType<typeof vi.fn> }).putEvent;
+    expect(putEvent).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: "482913", class: "claimed", type: "status",
+      detail: expect.objectContaining({ state: "working", label: "shipping" }),
+    }));
+    const setStatus = (deps.activity as never as { setStatus: ReturnType<typeof vi.fn> }).setStatus;
+    expect(setStatus).toHaveBeenCalledWith("482913", expect.objectContaining({
+      state: "working", label: "shipping",
+    }));
+  });
+
+  it("stores a task_note as claimed without touching the STATUS row", async () => {
+    const deps = makeDeps();
+    const app = createApp(deps);
+    const res = await postActivity(app, { type: "task_note", note: "wrote tests" });
+    expect(res.status).toBe(201);
+    const putEvent = (deps.activity as never as { putEvent: ReturnType<typeof vi.fn> }).putEvent;
+    expect(putEvent).toHaveBeenCalledWith(expect.objectContaining({
+      class: "claimed", type: "task_note", summary: "wrote tests",
+    }));
+    const setStatus = (deps.activity as never as { setStatus: ReturnType<typeof vi.fn> }).setStatus;
+    expect(setStatus).not.toHaveBeenCalled();
+  });
+
+  it("400s every laundering attempt: attested class or attested type from a client", async () => {
+    const deps = makeDeps();
+    const app = createApp(deps);
+    for (const body of [
+      { type: "forge_commit", summary: "I totally committed" },
+      { class: "attested", type: "status", state: "working" },
+      { class: "attested", type: "forge_pr" },
+      { type: "email_received" },
+      { type: "capability_granted" },
+    ]) {
+      const res = await postActivity(app, body);
+      expect(res.status).toBe(400);
+    }
+    const putEvent = (deps.activity as never as { putEvent: ReturnType<typeof vi.fn> }).putEvent;
+    expect(putEvent).not.toHaveBeenCalled();
+  });
+
+  it("accepts an explicit claimed class (it is what the server sets anyway)", async () => {
+    const app = createApp(makeDeps());
+    const res = await postActivity(app, { class: "claimed", type: "task_note", note: "n" });
+    expect(res.status).toBe(201);
+  });
+
+  it("validates status state and note presence", async () => {
+    const app = createApp(makeDeps());
+    expect((await postActivity(app, { type: "status", state: "napping" })).status).toBe(400);
+    expect((await postActivity(app, { type: "status" })).status).toBe(400);
+    expect((await postActivity(app, { type: "task_note" })).status).toBe(400);
+    expect((await postActivity(app, { type: "task_note", note: "" })).status).toBe(400);
+    expect((await postActivity(app, { type: "task_note", note: 42 })).status).toBe(400);
+  });
+
+  it("sanitizes and caps agent-supplied strings at write time", async () => {
+    const deps = makeDeps();
+    const app = createApp(deps);
+    const label = `evil${cp(0x1b)}[31m` + "x".repeat(200);
+    await postActivity(app, { type: "status", state: "blocked", label });
+    const putEvent = (deps.activity as never as { putEvent: ReturnType<typeof vi.fn> }).putEvent;
+    const stored = putEvent.mock.calls[0][0] as { detail: { label: string } };
+    expect(stored.detail.label).not.toContain(cp(0x1b));
+    expect(stored.detail.label.length).toBe(120);
+
+    await postActivity(app, { type: "task_note", note: `n${cp(0x202e)}` + "y".repeat(600) });
+    const note = (putEvent.mock.calls[1][0] as { summary: string }).summary;
+    expect(note).not.toContain(cp(0x202e));
+    expect(note.length).toBe(500);
+  });
+});
+
+describe("GET /agents/me/activity", () => {
+  it("returns the caller's own feed with cursor pagination", async () => {
+    const deps = makeDeps();
+    const app = createApp(deps);
+    const path = "/agents/me/activity?limit=5&cursor=abc";
+    const res = await app.request(path, signed("GET", path));
+    expect(res.status).toBe(200);
+    const listEvents = (deps.activity as never as { listEvents: ReturnType<typeof vi.fn> }).listEvents;
+    expect(listEvents).toHaveBeenCalledWith("482913", { limit: 5, cursor: "abc" });
+  });
+
+  it("400s a malformed cursor", async () => {
+    const deps = makeDeps({
+      listEvents: vi.fn(async () => { throw new InvalidCursorError("malformed cursor"); }) as never,
+    });
+    const app = createApp(deps);
+    const path = "/agents/me/activity?cursor=nope";
+    const res = await app.request(path, signed("GET", path));
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /me recorded status", () => {
+  it("carries the server-recorded status with freshness", async () => {
+    const deps = makeDeps({
+      getStatus: vi.fn(async () => ({
+        state: "working", label: "l", updatedAt: "t", stale: false,
+      })) as never,
+    });
+    const app = createApp(deps);
+    const res = await app.request("/me", signed("GET", "/me"));
+    expect(await res.json()).toEqual(expect.objectContaining({
+      status: { state: "working", label: "l", updatedAt: "t", stale: false },
+    }));
+  });
+});
+
+describe("fleet routes auth matrix", () => {
+  it("viewer key grants GET /fleet/activity and GET /fleet/agents", async () => {
+    const deps = makeDeps();
+    const app = createApp(deps);
+    for (const path of ["/fleet/activity", "/fleet/agents"]) {
+      const res = await app.request(path, { headers: { "x-viewer-key": "vk" } });
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it("missing viewer key is 401; wrong viewer key is 403", async () => {
+    const app = createApp(makeDeps());
+    expect((await app.request("/fleet/activity")).status).toBe(401);
+    expect((await app.request("/fleet/activity", { headers: { "x-viewer-key": "wrong" } })).status).toBe(403);
+  });
+
+  it("a valid agent signature does NOT open fleet routes", async () => {
+    const app = createApp(makeDeps());
+    const res = await app.request("/fleet/activity", signed("GET", "/fleet/activity"));
+    expect(res.status).toBe(401);
+  });
+
+  it("the fleet (registration) key does NOT open fleet routes", async () => {
+    const deps = makeDeps();
+    const app = createApp(deps);
+    expect((await app.request("/fleet/activity", { headers: { "x-fleet-key": "fk" } })).status).toBe(401);
+    // Presenting the fleet key VALUE as a viewer key must also fail: viewer
+    // keys live in their own credential partition.
+    expect((await app.request("/fleet/activity", { headers: { "x-viewer-key": "fk" } })).status).toBe(403);
+  });
+
+  it("the viewer key is rejected on every non-fleet route", async () => {
+    const deps = makeDeps();
+    const app = createApp(deps);
+    const attempts: [string, string, unknown][] = [
+      ["POST", "/activity", { type: "task_note", note: "n" }],
+      ["GET", "/emails", undefined],
+      ["GET", "/me", undefined],
+      ["GET", "/agents/me/activity", undefined],
+      ["POST", "/register", undefined],
+    ];
+    for (const [method, path, body] of attempts) {
+      const res = await app.request(path, {
+        method,
+        body: body ? JSON.stringify(body) : undefined,
+        headers: { "x-viewer-key": "vk" },
+      });
+      expect(res.status).toBe(401);
+    }
+    const putEvent = (deps.activity as never as { putEvent: ReturnType<typeof vi.fn> }).putEvent;
+    expect(putEvent).not.toHaveBeenCalled();
+  });
+
+  it("GET /fleet/activity serves the fleet feed", async () => {
+    const deps = makeDeps({
+      listFleetEvents: vi.fn(async () => ({
+        events: [{ agentId: "1", ts: "t", class: "attested", type: "email_received", summary: "email received from github.com", detail: { senderDomain: "github.com" } }],
+      })) as never,
+    });
+    const app = createApp(deps);
+    const res = await app.request("/fleet/activity?limit=10", { headers: { "x-viewer-key": "vk" } });
+    const body = await res.json();
+    expect(body.events).toHaveLength(1);
+    const listFleetEvents = (deps.activity as never as { listFleetEvents: ReturnType<typeof vi.fn> }).listFleetEvents;
+    expect(listFleetEvents).toHaveBeenCalledWith({ limit: 10 });
+  });
+
+  it("GET /fleet/agents serves the roster", async () => {
+    const deps = makeDeps({
+      fleetRoster: vi.fn(async () => [
+        { agentId: "1", capabilities: ["github"], counts: { attested: 2, claimed: 1 } },
+      ]) as never,
+    });
+    const app = createApp(deps);
+    const res = await app.request("/fleet/agents", { headers: { "x-viewer-key": "vk" } });
+    expect(await res.json()).toEqual({
+      agents: [{ agentId: "1", capabilities: ["github"], counts: { attested: 2, claimed: 1 } }],
+    });
   });
 });

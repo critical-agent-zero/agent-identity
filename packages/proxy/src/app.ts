@@ -1,12 +1,24 @@
 import {
   signatureAuth, type AgentRecord, type AgentsRepo, type NoncesRepo,
 } from "@agent-identity/api";
+import { sanitizeAttestedEvent, type ActivityEvent } from "@agent-identity/shared";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import {
   ForgeError, statusFor, type Author, type Forge, type Provisioner,
 } from "./forge.js";
 import { evaluate, type ForgeOp, type Policy } from "./policy.js";
+
+/** Attested-event sink (the shared data layer's ActivityRepo in production).
+ *  The proxy is infrastructure: it observed the forge operation succeed, so
+ *  it — and only it — may write these events as class "attested". */
+export interface ActivityLedger {
+  putEvent(event: ActivityEvent): Promise<unknown>;
+}
+
+/** What a route contributes to the attested event; agentId/ts/class are
+ *  filled in centrally so no route can mislabel an event's class. */
+type Attestation = Pick<ActivityEvent, "type" | "summary" | "detail" | "ref">;
 
 export interface ProxyDeps {
   agents: AgentsRepo;
@@ -15,6 +27,7 @@ export interface ProxyDeps {
   provisioners?: Record<string, Provisioner>;
   policy?: Policy;
   audit?: (line: Record<string, unknown>) => void;
+  activity?: ActivityLedger;
 }
 
 interface Guarded {
@@ -49,6 +62,7 @@ export function createProxyApp(deps: ProxyDeps): Hono {
 
   const run = async <T>(
     c: Context, g: Guarded, op: ForgeOp, call: () => Promise<T>,
+    attest?: (result: T) => Attestation,
   ): Promise<Response> => {
     const base = {
       agentId: g.agent.agentId, service: op.service, op: op.kind,
@@ -63,6 +77,25 @@ export function createProxyApp(deps: ProxyDeps): Hono {
     try {
       const result = await call();
       audit({ ...base, outcome: "ok", latencyMs: Date.now() - started });
+      if (attest && deps.activity) {
+        try {
+          // Central character/length defense: route attestations embed
+          // request strings (branch, repo) that forges accept with arbitrary
+          // non-ASCII and unbounded length. Sanitizing here — not per route —
+          // means no route can forget it.
+          await deps.activity.putEvent(sanitizeAttestedEvent({
+            agentId: g.agent.agentId, ts: new Date().toISOString(),
+            class: "attested", ...attest(result),
+          }));
+        } catch (ledgerErr) {
+          // The forge operation already succeeded; a ledger outage must
+          // never turn that success into a failure. Log and continue.
+          audit({
+            ...base, outcome: "ledger_write_failed",
+            error: (ledgerErr as Error).message,
+          });
+        }
+      }
       return c.json(result as object);
     } catch (err) {
       if (err instanceof ForgeError) {
@@ -116,6 +149,7 @@ export function createProxyApp(deps: ProxyDeps): Hono {
       return c.json({ error: "invalid_request" }, 400);
     }
     const op: ForgeOp = { service: g.service, kind: "commit", owner: b.owner, repo: b.repo };
+    const repo = `${b.owner}/${b.repo}`;
     return run(c, g, op, () => g.forge.createCommit(
       { owner: b.owner as string, name: b.repo as string },
       {
@@ -123,7 +157,12 @@ export function createProxyApp(deps: ProxyDeps): Hono {
         files: b.files as { path: string; content: string }[],
       },
       g.actor,
-    ));
+    ), (r) => ({
+      type: "forge_commit",
+      summary: `committed to ${repo}@${b.branch}`,
+      detail: { service: g.service, repo, branch: b.branch as string, sha: r.sha },
+      ref: r.url,
+    }));
   });
 
   app.post("/forge/:service/pr", async (c) => {
@@ -136,6 +175,7 @@ export function createProxyApp(deps: ProxyDeps): Hono {
     }
     const op: ForgeOp = { service: g.service, kind: "pr", owner: b.owner, repo: b.repo };
     const footer = `\n\n_opened by agent ${g.agent.agentId} via agent-identity proxy_`;
+    const repo = `${b.owner}/${b.repo}`;
     return run(c, g, op, () => g.forge.openPullRequest(
       { owner: b.owner as string, name: b.repo as string },
       {
@@ -143,7 +183,12 @@ export function createProxyApp(deps: ProxyDeps): Hono {
         title: b.title as string, body: `${b.body}${footer}`,
       },
       g.actor,
-    ));
+    ), (r) => ({
+      type: "forge_pr",
+      summary: `opened PR #${r.number} on ${repo}`,
+      detail: { service: g.service, repo, number: r.number },
+      ref: r.url,
+    }));
   });
 
   app.post("/forge/:service/comment", async (c) => {
@@ -156,10 +201,16 @@ export function createProxyApp(deps: ProxyDeps): Hono {
     }
     const op: ForgeOp = { service: g.service, kind: "comment", owner: b.owner, repo: b.repo };
     const footer = `\n\n_comment by agent ${g.agent.agentId} via agent-identity proxy_`;
+    const repo = `${b.owner}/${b.repo}`;
     return run(c, g, op, () => g.forge.comment(
       { owner: b.owner as string, name: b.repo as string },
       b.issue as number, `${b.body}${footer}`, g.actor,
-    ));
+    ), (r) => ({
+      type: "forge_comment",
+      summary: `commented on ${repo}#${b.issue}`,
+      detail: { service: g.service, repo, issue: b.issue as number },
+      ref: r.url,
+    }));
   });
 
   app.post("/forge/:service/fork", async (c) => {
@@ -168,7 +219,14 @@ export function createProxyApp(deps: ProxyDeps): Hono {
     const b = await c.req.json().catch(() => undefined) as Record<string, unknown> | undefined;
     if (!b || !isStr(b.owner) || !isStr(b.repo)) return c.json({ error: "invalid_request" }, 400);
     const op: ForgeOp = { service: g.service, kind: "fork", owner: b.owner, repo: b.repo };
-    return run(c, g, op, () => g.forge.fork({ owner: b.owner as string, name: b.repo as string }, g.actor));
+    const source = `${b.owner}/${b.repo}`;
+    return run(c, g, op,
+      () => g.forge.fork({ owner: b.owner as string, name: b.repo as string }, g.actor),
+      (r) => ({
+        type: "forge_fork",
+        summary: `forked ${source} to ${r.owner}/${r.repo}`,
+        detail: { service: g.service, source, fork: `${r.owner}/${r.repo}` },
+      }));
   });
 
   app.post("/forge/:service/provision", async (c) => {
@@ -177,7 +235,13 @@ export function createProxyApp(deps: ProxyDeps): Hono {
     const provisioner = deps.provisioners?.[g.service];
     if (!provisioner) return c.json({ error: "provisioning_unsupported" }, 404);
     const op: ForgeOp = { service: g.service, kind: "provision", owner: "-", repo: "-" };
-    return run(c, g, op, () => provisioner.provision(g.actor));
+    // The event deliberately records only the service: the provisioned
+    // username and mailbox address must never reach fleet feeds.
+    return run(c, g, op, () => provisioner.provision(g.actor), () => ({
+      type: "capability_granted",
+      summary: `provisioned a ${g.service} service account`,
+      detail: { service: g.service },
+    }));
   });
 
   return app;

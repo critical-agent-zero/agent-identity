@@ -1,3 +1,4 @@
+import type { ActivityEvent } from "@agent-identity/shared";
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { processRecord, processEvent, type IngestDeps } from "./handler.js";
 
@@ -313,5 +314,78 @@ describe("processRecord text sanitization", () => {
       { html?: string; links: string[] };
     expect(body.html).not.toContain(esc);
     for (const link of body.links) expect(link).not.toContain(esc);
+  });
+});
+
+describe("attested email_received events", () => {
+  const withLedger = () => {
+    const putEvent = vi.fn(async (_event: ActivityEvent) => "id");
+    const deps: IngestDeps = { ...makeDeps(), activity: { putEvent } };
+    return { deps, putEvent };
+  };
+
+  it("writes an attested event carrying ONLY the sender domain on authenticated delivery", async () => {
+    const { deps, putEvent } = withLedger();
+    await processRecord(sesRecord({ dkimVerdict: { status: "PASS" } }) as never, deps);
+    expect(putEvent).toHaveBeenCalledTimes(1);
+    const event = putEvent.mock.calls[0][0];
+    expect(event).toEqual(expect.objectContaining({
+      agentId: "482913", class: "attested", type: "email_received",
+      ts: "2026-07-04T10:00:00.000Z",
+      detail: { senderDomain: "b.c" },
+    }));
+    // Never subject, body text, or the full sender address.
+    const json = JSON.stringify(event);
+    expect(json).not.toContain("hello");
+    expect(json).not.toContain("a@b.c");
+    expect(event).not.toHaveProperty("subject");
+  });
+
+  it("writes the event when DMARC alone passes", async () => {
+    const { deps, putEvent } = withLedger();
+    await processRecord(sesRecord({ dmarcVerdict: { status: "PASS" } }) as never, deps);
+    expect(putEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes NO event when no authentication verdict passes (fail-open delivery, no attested provenance)", async () => {
+    // Missing verdicts (self-hoster with scanning disabled) deliver the mail
+    // but must not mint a permanent attested row.
+    const { deps, putEvent } = withLedger();
+    await processRecord(sesRecord() as never, deps);
+    expect(deps.emails.putEmail).toHaveBeenCalled();
+    expect(putEvent).not.toHaveBeenCalled();
+  });
+
+  it("writes NO event for unsolicited (non-allowlisted) mail", async () => {
+    const { deps, putEvent } = withLedger();
+    deps.senderAllowlist = ["github.com"]; // sender a@b.c no longer allowlisted
+    await processRecord(sesRecord() as never, deps);
+    expect(deps.emails.putEmail).toHaveBeenCalledWith("482913",
+      expect.objectContaining({ unsolicited: true }));
+    expect(putEvent).not.toHaveBeenCalled();
+  });
+
+  it("writes NO event for quarantined mail", async () => {
+    const { deps, putEvent } = withLedger();
+    await processRecord(sesRecord({ dmarcVerdict: { status: "FAIL" } }) as never, deps);
+    expect(deps.quarantineRaw).toHaveBeenCalled();
+    expect(putEvent).not.toHaveBeenCalled();
+  });
+
+  it("a ledger write failure never fails delivery (log-and-continue)", async () => {
+    const putEvent = vi.fn(async () => { throw new Error("ddb down"); });
+    const deps: IngestDeps = { ...makeDeps(), activity: { putEvent } };
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const record = sesRecord({ dkimVerdict: { status: "PASS" } });
+    await expect(processRecord(record as never, deps)).resolves.toBeUndefined();
+    expect(deps.emails.putEmail).toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("stays inert when no ledger is wired (self-hosters mid-upgrade)", async () => {
+    const deps = makeDeps();
+    await expect(processRecord(sesRecord() as never, deps)).resolves.toBeUndefined();
+    expect(deps.emails.putEmail).toHaveBeenCalled();
   });
 });

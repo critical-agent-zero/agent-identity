@@ -1,4 +1,4 @@
-import { AgentsRepo, NoncesRepo } from "@agent-identity/api";
+import { ActivityRepo, AgentsRepo, NoncesRepo } from "@agent-identity/api";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { handle } from "hono/aws-lambda";
@@ -18,6 +18,9 @@ const credentials = new SsmCredentialStore();
 const app = createProxyApp({
   agents: new AgentsRepo(ddb, table, domain),
   nonces: new NoncesRepo(ddb, table),
+  // Attested forge events, written through the shared data layer (the proxy
+  // lambda already holds table access) — never via HTTP.
+  activity: new ActivityRepo(ddb, table),
   forges: {
     github: new GithubForge({ credentials }),
     gitlab: new GitlabForge({ credentials }),

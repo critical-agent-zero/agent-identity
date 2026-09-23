@@ -1,6 +1,6 @@
-import type { AgentsRepo, EmailsRepo } from "@agent-identity/api";
+import type { ActivityRepo, AgentsRepo, EmailsRepo } from "@agent-identity/api";
 import {
-  matchesSenderDomain, sanitizeMailText,
+  matchesSenderDomain, sanitizeAttestedEvent, sanitizeMailText, senderDomain,
   type AuthVerdictStatus, type EmailAuthVerdicts,
 } from "@agent-identity/shared";
 import type { SESEventRecord, SESReceipt } from "aws-lambda";
@@ -12,6 +12,9 @@ export interface IngestDeps {
   quarantineRaw: (messageId: string) => Promise<void>;
   agents: Pick<AgentsRepo, "getByLocalPart">;
   emails: Pick<EmailsRepo, "putEmail">;
+  /** Attested activity ledger. Optional so a self-hoster's ingest keeps
+   *  working mid-upgrade before the ledger exists. */
+  activity?: Pick<ActivityRepo, "putEvent">;
   maxInlineBodyBytes: number;
   /** Sender domains whose mail delivers unflagged; anything else is stored
    *  with unsolicited: true and hidden from default reads. */
@@ -86,6 +89,36 @@ export async function processRecord(record: SESEventRecord, deps: IngestDeps): P
         ...base, text: parsed.text, html: parsed.html,
       });
     }
+
+    // Attested ledger event for delivered, allowlisted mail only — never for
+    // quarantined (returned above) or unsolicited mail. The event carries the
+    // sender DOMAIN alone: no subject, no body, no full address.
+    //
+    // Delivery above is fail-open by design (only explicit FAIL verdicts
+    // stop mail), which is an acceptable trade for a flagged mailbox — but a
+    // PERMANENT attested row is manufactured provenance, so it additionally
+    // demands a positive authentication verdict (DKIM or DMARC PASS). An
+    // unauthenticated (all-GRAY) spoof of an allowlisted domain still
+    // delivers; it never mints attested provenance.
+    const senderAuthenticated = auth?.dkim === "PASS" || auth?.dmarc === "PASS";
+    if (!unsolicited && senderAuthenticated && deps.activity) {
+      const domain = senderDomain(parsed.from);
+      if (domain) {
+        try {
+          await deps.activity.putEvent(sanitizeAttestedEvent({
+            agentId: agent.agentId, ts: mail.timestamp, class: "attested",
+            type: "email_received",
+            summary: `email received from ${domain}`,
+            detail: { senderDomain: domain },
+          }));
+        } catch (error) {
+          // The mail is stored; a ledger outage must not fail delivery.
+          console.error("ingest: failed to write activity event", {
+            messageId: mail.messageId, error,
+          });
+        }
+      }
+    }
   }
 }
 
@@ -93,7 +126,11 @@ export async function processRecord(record: SESEventRecord, deps: IngestDeps): P
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { CopyObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { AgentsRepo as AgentsRepoImpl, EmailsRepo as EmailsRepoImpl } from "@agent-identity/api";
+import {
+  ActivityRepo as ActivityRepoImpl,
+  AgentsRepo as AgentsRepoImpl,
+  EmailsRepo as EmailsRepoImpl,
+} from "@agent-identity/api";
 import type { SESEvent } from "aws-lambda";
 
 export function makeLambdaDeps(): IngestDeps {
@@ -125,6 +162,7 @@ export function makeLambdaDeps(): IngestDeps {
     },
     agents: new AgentsRepoImpl(ddb, table, domain),
     emails: new EmailsRepoImpl(ddb, table, Number(process.env.RETENTION_DAYS ?? "90")),
+    activity: new ActivityRepoImpl(ddb, table, Number(process.env.RETENTION_DAYS ?? "90")),
     maxInlineBodyBytes: 300_000,
     // Default mirrors the stack's senderAllowlist context default, so a
     // self-hoster running without the env var still gets the forge domains.
