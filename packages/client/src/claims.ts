@@ -15,6 +15,9 @@ export interface PoolProfile extends Keypair {
   agentId?: string;
   address?: string;
   github?: GithubLink;
+  // Server-granted capabilities recorded from the register response (e.g.
+  // birth grants under the deployment's auto-capabilities policy).
+  capabilities?: string[];
 }
 
 export const poolDir = (base: string = defaultProfileDir()): string => join(base, "pool");
@@ -42,7 +45,11 @@ export function listPool(base?: string): Array<{ name: string; profile: PoolProf
 }
 
 export function hasCapabilities(profile: PoolProfile, require: string[]): boolean {
-  return require.every((cap) => (cap === "github" ? profile.github !== undefined : false));
+  // A capability is satisfied by the server-granted record on the profile,
+  // or — for github — by an operator-linked github account.
+  return require.every((cap) =>
+    (profile.capabilities ?? []).includes(cap)
+    || (cap === "github" && profile.github !== undefined));
 }
 
 export function savePoolProfile(

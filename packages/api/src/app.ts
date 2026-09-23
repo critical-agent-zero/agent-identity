@@ -1,5 +1,6 @@
 import {
   fingerprint, projectPublicEvent, publicView, sanitizeActivityText,
+  sanitizeAttestedEvent,
   STATUS_LABEL_MAX, STATUS_STATES, TASK_NOTE_MAX,
   type ActivityEvent, type AgentStatusState,
 } from "@agent-identity/shared";
@@ -21,6 +22,12 @@ export interface Deps {
    *  (parseRepoAllowlist of PUBLIC_REPOS). Empty — the default — means the
    *  public tier shows no forge events at all: fail closed. */
   publicRepos: string[];
+  /** OPERATOR DEPLOYMENT POLICY (AUTO_CAPABILITIES), never an ambient agent
+   *  power: capability slugs POST /register may grant at identity BIRTH when
+   *  the fleet-key-gated registration asks for them. Empty — the default —
+   *  turns the feature off: the admin-key route stays the only grant path
+   *  and the request body changes nothing. */
+  autoCapabilities: string[];
 }
 
 const isFleetPath = (pathname: string): boolean =>
@@ -181,7 +188,44 @@ export function createApp(deps: Deps, now: () => number = Date.now): Hono {
         return c.json({ error: "invalid fleet key" }, 403);
     }
     const publicKey = c.get("verifiedPublicKey");
-    const identity = await deps.agents.register(publicKey, fingerprint(publicKey));
+    // requestedCapabilities is honored ONLY where the operator's
+    // AUTO_CAPABILITIES policy lists the slug AND it passes the same shape
+    // bound as the admin grant route. Everything else is silently dropped —
+    // registration still succeeds, so probing the request body yields no
+    // error oracle on what the policy contains.
+    const body = await c.req.json().catch(() => undefined) as
+      { requestedCapabilities?: unknown } | undefined;
+    const requested = Array.isArray(body?.requestedCapabilities)
+      ? body.requestedCapabilities
+      : [];
+    const granted = requested.filter((cap): cap is string =>
+      typeof cap === "string" && CAPABILITY_RE.test(cap)
+      && deps.autoCapabilities.includes(cap));
+    const { created, ...identity } =
+      await deps.agents.register(publicKey, fingerprint(publicKey), granted);
+    // Birth-only, by construction: the repo grants only when it CREATES the
+    // record (created:false returns the existing record untouched), and the
+    // ledger event is written only on that same birth. An already-registered
+    // agent re-posting /register can never self-escalate or mint spurious
+    // grant events.
+    if (created) {
+      for (const capability of identity.capabilities ?? []) {
+        try {
+          // The API observed itself apply the deployment policy, so this —
+          // like the proxy's provision event — is infrastructure attestation,
+          // marked distinct from operator grants by detail.policy = "auto".
+          await deps.activity.putEvent(sanitizeAttestedEvent({
+            agentId: identity.agentId, ts: new Date().toISOString(),
+            class: "attested", type: "capability_granted",
+            summary: `capability ${capability} granted at registration by deployment policy`,
+            detail: { capability, policy: "auto" },
+          }));
+        } catch {
+          // The grant is already durable in the agent record; a ledger
+          // outage must not turn a successful registration into a failure.
+        }
+      }
+    }
     return c.json(identity);
   });
 

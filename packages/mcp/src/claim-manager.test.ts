@@ -32,6 +32,95 @@ function fakeFactory(registered: string[] = []) {
   });
 }
 
+// Fake client factory modeling the auto-capabilities policy: register()
+// grants the intersection of requestedCapabilities and `granting`. Fresh
+// keypairs (auto-provision) get stable sequential ids starting at 555550.
+function grantingFactory(granting: string[], registerCalls: unknown[] = []) {
+  const ids = new Map<string, string>();
+  let fresh = 0;
+  return vi.fn((keypair: { publicKeySpkiBase64: string }) => {
+    const key = keypair.publicKeySpkiBase64;
+    let id: string;
+    if (key.startsWith("pk-")) {
+      id = key.slice(3);
+    } else {
+      if (!ids.has(key)) ids.set(key, String(555550 + fresh++));
+      id = ids.get(key)!;
+    }
+    return {
+      register: vi.fn(async (opts?: { requestedCapabilities?: string[] }) => {
+        registerCalls.push(opts);
+        const caps = (opts?.requestedCapabilities ?? []).filter((c) => granting.includes(c));
+        return {
+          agentId: id, address: `${id}@d`,
+          ...(caps.length > 0 ? { capabilities: caps } : {}),
+        };
+      }),
+    };
+  });
+}
+
+describe("ClaimManager auto-capabilities", () => {
+  it("require with the policy ON mints a capable identity, claims it, and records the grant", async () => {
+    const dir = base();
+    savePoolProfile(profile("111111"), dir); // plain only — cannot satisfy require
+    const calls: unknown[] = [];
+    const mgr = new ClaimManager({
+      base: dir, fleetKey: "fk", makeClient: grantingFactory(["github"], calls) as never,
+    });
+    await mgr.init();
+    expect(mgr.status().held?.name).toBe("111111");
+    const identity = await mgr.ensureIdentity(["github"]);
+    expect(identity.agentId).toBe("555550");
+    expect(calls[0]).toEqual({ requestedCapabilities: ["github"] });
+    expect(mgr.status().held?.name).toBe("555550");
+    expect(mgr.status().held?.capabilities).toContain("github");
+    mgr.release();
+  });
+
+  it("require with the policy OFF fails with the remediation text plus the policy hint, keeping the claim", async () => {
+    const dir = base();
+    savePoolProfile(profile("111111"), dir);
+    const mgr = new ClaimManager({
+      base: dir, fleetKey: "fk", makeClient: grantingFactory([], []) as never,
+    });
+    await mgr.init();
+    await expect(mgr.ensureIdentity(["github"])).rejects.toThrow(
+      /no free identity with capabilities \[github\][\s\S]*auto-capabilities/,
+    );
+    expect(mgr.status().held?.name).toBe("111111");
+    // The refused-grant identity is still a valid plain one: kept in the
+    // pool rather than orphaning a registered keypair.
+    expect(mgr.status().pool.total).toBe(2);
+    mgr.release();
+  });
+
+  it("plain auto-provision (no require) asks for no capabilities", async () => {
+    const dir = base(); // empty pool
+    const calls: unknown[] = [];
+    const mgr = new ClaimManager({
+      base: dir, fleetKey: "fk", makeClient: grantingFactory(["github"], calls) as never,
+    });
+    await mgr.init();
+    expect(mgr.status().held?.agentId).toBe("555550");
+    expect(calls[0] ?? {}).toEqual({});
+  });
+
+  it("require satisfied by the pool never mints", async () => {
+    const dir = base();
+    savePoolProfile(profile("222222", { username: "x" }), dir);
+    const calls: unknown[] = [];
+    const mgr = new ClaimManager({
+      base: dir, require: ["github"], fleetKey: "fk",
+      makeClient: grantingFactory(["github"], calls) as never,
+    });
+    await mgr.init();
+    expect(mgr.status().held?.name).toBe("222222");
+    expect(calls).toEqual([]);
+    mgr.release();
+  });
+});
+
 describe("ClaimManager", () => {
   it("init claims a free pool profile and client() works", async () => {
     const dir = base();

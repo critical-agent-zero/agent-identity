@@ -54,6 +54,7 @@ function makeDeps(allEvents: ActivityEvent[], roster: unknown[] = []): Deps {
     readBody: vi.fn(async () => ({ text: "", links: [] })),
     fleetKeyRequired: true,
     publicRepos: parseRepoAllowlist("critical-labs/*"),
+    autoCapabilities: [],
   };
 }
 

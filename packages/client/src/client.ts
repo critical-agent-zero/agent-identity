@@ -2,7 +2,8 @@ import {
   canonicalString, sign, type ActivityEvent, type AgentIdentity, type AgentStatusState,
   type AgentStatusView, type CommentResult, type CommitResult,
   type CommitSpec, type EmailFull, type EmailSummary, type ForgeProvisionResult,
-  type ForkResult, type Keypair, type PrResult, type PrSpec, type RepoInfo, type RepoRef,
+  type ForkResult, type Keypair, type PrResult, type PrSpec,
+  type RegisterResponse, type RepoInfo, type RepoRef,
 } from "@agent-identity/shared";
 
 /** GET /me: identity plus operator-set capabilities and, when one has been
@@ -69,8 +70,15 @@ export class AgentIdentityClient {
     }
   }
 
-  register(): Promise<AgentIdentity> {
-    return this.request("POST", "/register", "",
+  /** Register (idempotent). `requestedCapabilities` asks the deployment's
+   *  AUTO_CAPABILITIES policy for birth grants; slugs outside the policy are
+   *  silently ignored server-side. With no request the wire shape is
+   *  unchanged (empty body), so older servers are unaffected. */
+  register(opts: { requestedCapabilities?: string[] } = {}): Promise<RegisterResponse> {
+    const body = opts.requestedCapabilities && opts.requestedCapabilities.length > 0
+      ? JSON.stringify({ requestedCapabilities: opts.requestedCapabilities })
+      : "";
+    return this.request("POST", "/register", body,
       this.opts.fleetKey ? { "x-fleet-key": this.opts.fleetKey } : {});
   }
 

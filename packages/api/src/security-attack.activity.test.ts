@@ -42,6 +42,7 @@ function makeDeps(): Deps {
     readBody: vi.fn(async () => ({ text: "", links: [] })),
     fleetKeyRequired: true,
     publicRepos: [],
+    autoCapabilities: [],
   };
 }
 

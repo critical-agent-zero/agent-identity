@@ -99,6 +99,15 @@ export class AgentIdentityStack extends Stack {
         // shown. Events without the stamp — including everything attested
         // before stamping existed — are never shown publicly.
         PUBLIC_REPOS: this.node.tryGetContext("publicRepos") ?? "",
+        // OPERATOR DEPLOYMENT POLICY, never an ambient agent power: the
+        // comma-separated capability slugs that POST /register may grant at
+        // identity BIRTH when the (fleet-key-gated) registration asks for
+        // them. Defaults to EMPTY — the feature is off and the admin-key
+        // route stays the only grant path. Enabling a slug here trades the
+        // per-identity admin ceremony for a deployment-wide policy: anyone
+        // holding the fleet key can then mint identities born with these
+        // capabilities, so list only what every fleet-key holder may have.
+        AUTO_CAPABILITIES: this.node.tryGetContext("autoCapabilities") ?? "",
       },
     });
     table.grantReadWriteData(apiFn);

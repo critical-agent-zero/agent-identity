@@ -30,6 +30,10 @@ const app = createApp({
   // Unset or empty PUBLIC_REPOS parses to the empty allowlist: the public
   // fleet tier then shows no forge events at all — fail closed.
   publicRepos: parseRepoAllowlist(process.env.PUBLIC_REPOS ?? ""),
+  // Operator deployment policy: capability slugs /register may grant at
+  // identity birth. Unset or empty = feature off (fail closed).
+  autoCapabilities: (process.env.AUTO_CAPABILITIES ?? "")
+    .split(",").map((s) => s.trim()).filter((s) => s.length > 0),
 });
 
 export const handler = handle(app);

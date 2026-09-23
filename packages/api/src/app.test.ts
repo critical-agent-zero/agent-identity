@@ -55,6 +55,7 @@ function makeDeps(overrides: Record<string, unknown> = {}): Deps {
     readBody: vi.fn(async () => ({ text: "overflow", html: undefined, links: [] })),
     fleetKeyRequired: true,
     publicRepos: [],
+    autoCapabilities: (overrides.autoCapabilities as string[]) ?? [],
   };
 }
 
@@ -75,6 +76,109 @@ describe("app", () => {
     const app = createApp(deps);
     const res = await app.request("/register", signed("POST", "/register"));
     expect(res.status).toBe(403);
+  });
+
+  it("POST /register with a granting policy mints the capability at birth and returns it", async () => {
+    const register = vi.fn(async () => ({
+      agentId: "482913", address: "482913@d", capabilities: ["github"], created: true,
+    }));
+    const deps = makeDeps({ autoCapabilities: ["github"], register: register as never });
+    const app = createApp(deps);
+    const body = JSON.stringify({ requestedCapabilities: ["github"] });
+    const req = signed("POST", "/register", body);
+    const res = await app.request("/register", {
+      ...req, headers: { ...req.headers, "x-fleet-key": "fk" },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      agentId: "482913", address: "482913@d", capabilities: ["github"],
+    });
+    expect(register).toHaveBeenCalledWith(kp.publicKeySpkiBase64, expect.any(String), ["github"]);
+  });
+
+  it("POST /register auto-grant writes an attested capability_granted event with policy detail", async () => {
+    const register = vi.fn(async () => ({
+      agentId: "482913", address: "482913@d", capabilities: ["github"], created: true,
+    }));
+    const deps = makeDeps({ autoCapabilities: ["github"], register: register as never });
+    const app = createApp(deps);
+    const body = JSON.stringify({ requestedCapabilities: ["github"] });
+    const req = signed("POST", "/register", body);
+    await app.request("/register", {
+      ...req, headers: { ...req.headers, "x-fleet-key": "fk" },
+    });
+    expect(deps.activity.putEvent).toHaveBeenCalledTimes(1);
+    expect(deps.activity.putEvent).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: "482913", class: "attested", type: "capability_granted",
+      detail: expect.objectContaining({ policy: "auto", capability: "github" }),
+    }));
+  });
+
+  it("POST /register ignores requested capabilities outside the policy — success, no grant, no error oracle", async () => {
+    const register = vi.fn(async () => ({
+      agentId: "482913", address: "482913@d", capabilities: ["github"], created: true,
+    }));
+    const deps = makeDeps({ autoCapabilities: ["github"], register: register as never });
+    const app = createApp(deps);
+    const body = JSON.stringify({ requestedCapabilities: ["github", "aws-admin"] });
+    const req = signed("POST", "/register", body);
+    const res = await app.request("/register", {
+      ...req, headers: { ...req.headers, "x-fleet-key": "fk" },
+    });
+    expect(res.status).toBe(200);
+    expect(register).toHaveBeenCalledWith(kp.publicKeySpkiBase64, expect.any(String), ["github"]);
+  });
+
+  it("POST /register with an EMPTY policy grants nothing regardless of the body", async () => {
+    const register = vi.fn(async () => ({
+      agentId: "482913", address: "482913@d", capabilities: [], created: true,
+    }));
+    const deps = makeDeps({ register: register as never }); // autoCapabilities defaults to []
+    const app = createApp(deps);
+    const body = JSON.stringify({ requestedCapabilities: ["github"] });
+    const req = signed("POST", "/register", body);
+    const res = await app.request("/register", {
+      ...req, headers: { ...req.headers, "x-fleet-key": "fk" },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ agentId: "482913", address: "482913@d", capabilities: [] });
+    expect(register).toHaveBeenCalledWith(kp.publicKeySpkiBase64, expect.any(String), []);
+    expect(deps.activity.putEvent).not.toHaveBeenCalled();
+  });
+
+  it("POST /register applies the admin route's capability shape bound to policy grants", async () => {
+    const register = vi.fn(async () => ({
+      agentId: "482913", address: "482913@d", capabilities: [], created: true,
+    }));
+    // Even a policy entry that violates the slug bound can never be granted.
+    const deps = makeDeps({ autoCapabilities: ["BAD!cap", "github"], register: register as never });
+    const app = createApp(deps);
+    const body = JSON.stringify({ requestedCapabilities: ["BAD!cap"] });
+    const req = signed("POST", "/register", body);
+    const res = await app.request("/register", {
+      ...req, headers: { ...req.headers, "x-fleet-key": "fk" },
+    });
+    expect(res.status).toBe(200);
+    expect(register).toHaveBeenCalledWith(kp.publicKeySpkiBase64, expect.any(String), []);
+    expect(deps.activity.putEvent).not.toHaveBeenCalled();
+  });
+
+  it("POST /register re-register cannot self-escalate: existing record, no retro-grant, no event", async () => {
+    // The repo reports created:false — this key already has a record whose
+    // capabilities are empty. Asking again with the policy ON must not grant.
+    const register = vi.fn(async () => ({
+      agentId: "482913", address: "482913@d", capabilities: [], created: false,
+    }));
+    const deps = makeDeps({ autoCapabilities: ["github"], register: register as never });
+    const app = createApp(deps);
+    const body = JSON.stringify({ requestedCapabilities: ["github"] });
+    const req = signed("POST", "/register", body);
+    const res = await app.request("/register", {
+      ...req, headers: { ...req.headers, "x-fleet-key": "fk" },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ agentId: "482913", address: "482913@d", capabilities: [] });
+    expect(deps.activity.putEvent).not.toHaveBeenCalled();
   });
 
   it("GET /me returns caller identity", async () => {

@@ -32,7 +32,12 @@ export interface EmailFull extends EmailSummary {
   links: string[];
 }
 
-export interface RegisterResponse extends AgentIdentity {}
+export interface RegisterResponse extends AgentIdentity {
+  // Capabilities on the record after registration — birth grants applied by
+  // the deployment's AUTO_CAPABILITIES policy, or the existing set on an
+  // idempotent re-register. Absent on servers predating the field.
+  capabilities?: string[];
+}
 
 // --- forge proxy DTOs (see docs/forge-access.md; history: docs/internal/specs/) ---
 
