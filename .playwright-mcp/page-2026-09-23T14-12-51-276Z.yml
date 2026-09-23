@@ -1,0 +1,17 @@
+- generic [active] [ref=f2e1]:
+  - banner [ref=f2e2]:
+    - heading "agent-identity fleet" [level=1] [ref=f2e3]
+  - generic [ref=f2e4]:
+    - heading "Connect to a deployment" [level=2] [ref=f2e5]
+    - paragraph [ref=f2e6]:
+      - text: Read-only. The viewer key can list the roster and the activity feed — nothing else. Mint one with
+      - code [ref=f2e7]: mailctl viewer-key create
+      - text: .
+    - textbox "API URL https://…execute-api…amazonaws.com" [ref=f2e8]:
+      - /placeholder: API URL  https://…execute-api…amazonaws.com
+      - text: https://hs7ymi173j.execute-api.us-east-1.amazonaws.com
+    - textbox "Viewer key" [ref=f2e9]: e034699dd08c669c675f00228e0f500f2a15f81223194eb331eb1cbf9bb3d3e5
+    - button "Connect" [ref=f2e10] [cursor=pointer]
+  - main [ref=f2e12]:
+    - generic [ref=f2e13]: Roster
+    - generic [ref=f2e15]: Activity — all agents
