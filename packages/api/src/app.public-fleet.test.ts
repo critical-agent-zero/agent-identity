@@ -79,6 +79,7 @@ function makeDeps(overrides: Record<string, unknown> = {}): Deps {
     fleetKeyRequired: true,
     publicRepos: parseRepoAllowlist("critical-labs/*"),
     ...(overrides.publicRepos !== undefined ? { publicRepos: overrides.publicRepos as string[] } : {}),
+    autoCapabilities: [],
   };
 }
 

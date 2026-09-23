@@ -46,6 +46,12 @@ describe("pool primitives", () => {
     expect(hasCapabilities(profile("1", { username: "x" }), ["gitlab"])).toBe(false);
   });
 
+  it("hasCapabilities: server-granted capabilities recorded on the profile satisfy require", () => {
+    expect(hasCapabilities({ ...profile("1"), capabilities: ["github"] }, ["github"])).toBe(true);
+    expect(hasCapabilities({ ...profile("1"), capabilities: ["gitlab"] }, ["github"])).toBe(false);
+    expect(hasCapabilities({ ...profile("1"), capabilities: [] }, ["github"])).toBe(false);
+  });
+
   it("linkGithub writes the github block into an existing pool profile", () => {
     const dir = base();
     savePoolProfile(profile("222222"), dir);

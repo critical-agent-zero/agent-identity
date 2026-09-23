@@ -8,7 +8,18 @@ export interface AgentRecord extends AgentIdentity {
   publicKey: string;
   status: "active" | "revoked";
   createdAt: string;
-  capabilities?: string[]; // operator-set via mailctl; registration never sets it
+  // Operator-set (admin route / mailctl), or granted at identity BIRTH by the
+  // deployment's AUTO_CAPABILITIES policy. Re-registration never touches it.
+  capabilities?: string[];
+}
+
+/** What register() resolved: the identity, its stored capabilities, and
+ *  whether THIS call created the record. `created` lets the API write the
+ *  birth-only ledger event without a second read — and is what confines
+ *  policy grants to birth: an existing record comes back as-is. */
+export interface RegistrationResult extends AgentIdentity {
+  capabilities: string[];
+  created: boolean;
 }
 
 export class AgentsRepo {
@@ -33,10 +44,21 @@ export class AgentsRepo {
     return this.getByFingerprint(Item.fingerprint as string);
   }
 
-  async register(publicKeySpkiBase64: string, fp: string): Promise<AgentIdentity> {
+  /** Idempotent registration. `birthCapabilities` (already policy-filtered
+   *  and shape-validated by the caller) are written ONLY when this call
+   *  creates the record: an existing agent re-registering gets its existing
+   *  record back untouched, so re-registration can never self-escalate. */
+  async register(
+    publicKeySpkiBase64: string, fp: string, birthCapabilities: string[] = [],
+  ): Promise<RegistrationResult> {
+    const asResult = (a: AgentRecord): RegistrationResult => ({
+      agentId: a.agentId, address: a.address,
+      capabilities: a.capabilities ?? [], created: false,
+    });
     const existing = await this.getByFingerprint(fp);
-    if (existing) return { agentId: existing.agentId, address: existing.address };
+    if (existing) return asResult(existing);
 
+    const granted = [...new Set(birthCapabilities)].sort();
     for (let attempt = 0; attempt < 5; attempt++) {
       const agentId = String(randomInt(100000, 1000000));
       const address = `${agentId}@${this.domain}`;
@@ -54,18 +76,19 @@ export class AgentsRepo {
                 PK: `AGENT#${fp}`, SK: "AGENT", agentId, address,
                 publicKey: publicKeySpkiBase64, status: "active",
                 createdAt: new Date().toISOString(),
+                ...(granted.length > 0 ? { capabilities: granted } : {}),
               },
               ConditionExpression: "attribute_not_exists(PK)",
             }},
           ],
         }));
-        return { agentId, address };
+        return { agentId, address, capabilities: granted, created: true };
       } catch (err) {
         if ((err as Error).name !== "TransactionCanceledException") throw err;
         // Either addr collision (retry new id) or concurrent register of the
-        // same key (return what won).
+        // same key (return what won — created:false, so no double ledger event).
         const winner = await this.getByFingerprint(fp);
-        if (winner) return { agentId: winner.agentId, address: winner.address };
+        if (winner) return asResult(winner);
       }
     }
     throw new Error("could not allocate agent id after 5 attempts");

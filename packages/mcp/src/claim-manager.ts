@@ -1,18 +1,20 @@
 import {
-  AgentIdentityClient, claimFromPool, hasCapabilities, poolStatus,
-  savePoolProfile, type Claim, type MeResponse, type PoolProfile, type PoolStatus,
+  AgentIdentityClient, claimFromPool, claimSpecific, hasCapabilities, listPool,
+  poolStatus, savePoolProfile,
+  type Claim, type MeResponse, type PoolProfile, type PoolStatus,
 } from "@agent-identity/client";
 import {
   generateKeypair, type ActivityEvent, type AgentIdentity, type AgentStatusState,
   type CommentResult, type CommitResult,
   type CommitSpec, type EmailFull, type EmailSummary, type ForgeProvisionResult,
-  type ForkResult, type Keypair, type PrResult, type PrSpec, type RepoInfo, type RepoRef,
+  type ForkResult, type Keypair, type PrResult, type PrSpec,
+  type RegisterResponse, type RepoInfo, type RepoRef,
 } from "@agent-identity/shared";
 
 export class NoIdentityError extends Error {}
 
 export interface AgentClientLike {
-  register(): Promise<AgentIdentity>;
+  register(opts?: { requestedCapabilities?: string[] }): Promise<RegisterResponse>;
   me(): Promise<MeResponse>;
   setStatus(state: AgentStatusState, label?: string): Promise<{ event: ActivityEvent }>;
   reportTaskNote(note: string): Promise<{ event: ActivityEvent }>;
@@ -41,7 +43,8 @@ export interface IdentityStatus {
   pool: PoolStatus;
 }
 
-const capsOf = (p: PoolProfile): string[] => (p.github ? ["github"] : []);
+const capsOf = (p: PoolProfile): string[] =>
+  [...new Set([...(p.capabilities ?? []), ...(p.github ? ["github"] : [])])].sort();
 
 export class ClaimManager {
   private held?: { claim: Claim; client: AgentClientLike };
@@ -70,27 +73,86 @@ export class ClaimManager {
       this.setHeld(claim);
       return;
     }
-    if (require.length > 0) {
-      throw new NoIdentityError(
-        `no free identity with capabilities [${require.join(",")}]. ` +
-        `Onboard a new one (see README: GitHub onboarding) or free one up ` +
-        `(inspect ~/.config/agent-identity/claims/).`,
-      );
-    }
-    // Plain exhaustion: mint a new identity.
+    const starvation = `no free identity with capabilities [${require.join(",")}]. ` +
+      `Onboard a new one (see README: GitHub onboarding) or free one up ` +
+      `(inspect ~/.config/agent-identity/claims/).`;
     if (!this.opts.fleetKey) {
-      throw new NoIdentityError(
-        "pool is empty and AGENT_IDENTITY_FLEET_KEY is not set, so a new identity cannot be registered",
-      );
+      throw new NoIdentityError(require.length > 0
+        ? starvation
+        : "pool is empty and AGENT_IDENTITY_FLEET_KEY is not set, so a new identity cannot be registered");
+    }
+    // Exhaustion — or a require no pool identity satisfies: mint a new
+    // identity through the same fleet-key path as plain auto-provision. With
+    // a require set, ask the deployment's AUTO_CAPABILITIES policy for birth
+    // grants; whether anything is granted is decided server-side by the
+    // operator's policy, never by this client.
+    //
+    // Every registration is a PERMANENT server-side identity (agent record,
+    // mailbox address from the finite agentId space, roster entry), so a
+    // require the policy refuses must not mint one per retry or restart: a
+    // free pool profile already carrying a refusal for any of these
+    // capabilities is proof the probe was made and refused — fail on that
+    // evidence instead of registering another.
+    if (require.length > 0) {
+      const parked = await this.freeRefusedProbe(require, exclude);
+      if (parked) {
+        throw new NoIdentityError(
+          `${starvation} A registration already probed the deployment policy for ` +
+          `[${require.join(",")}] and was refused (parked as pool profile ${parked}), ` +
+          `so another identity is not registered. If the operator has since enabled ` +
+          `AUTO_CAPABILITIES for these capabilities, claim or remove that parked ` +
+          `profile to allow a fresh registration.`,
+        );
+      }
     }
     const keypair = generateKeypair();
     const client = this.makeClientFn(keypair);
-    const identity = await client.register();
-    const profile: PoolProfile & { agentId: string } = { ...keypair, ...identity };
+    const identity = await client.register(
+      require.length > 0 ? { requestedCapabilities: require } : {});
+    const granted = identity.capabilities ?? [];
+    const refused = require.filter((cap) => !granted.includes(cap));
+    // Save before checking the grant: even a refused-grant identity is a
+    // valid plain one — keeping it avoids orphaning a registered keypair.
+    // A refusal is recorded on the profile (grants are birth-only, so it is
+    // permanent for this identity) to suppress repeat probe registrations.
+    const profile: PoolProfile & { agentId: string } = {
+      ...keypair, ...identity,
+      ...(refused.length > 0 ? { refusedCapabilities: refused } : {}),
+    };
     savePoolProfile(profile, this.opts.base);
-    const created = await claimFromPool({ base: this.opts.base, exclude });
+    if (refused.length > 0) {
+      // Policy off (or not covering the require): the starvation remediation
+      // stands, with the deployment-policy option added for the operator.
+      throw new NoIdentityError(
+        `${starvation} Alternatively, the operator can enable the auto-capabilities ` +
+        `deployment policy (AUTO_CAPABILITIES listing ${require.join(",")}) so ` +
+        `registration mints capable identities on demand.`,
+      );
+    }
+    const created = await claimFromPool({ base: this.opts.base, require, exclude });
     if (!created) throw new NoIdentityError("could not claim freshly created identity");
     this.setHeld(created);
+  }
+
+  // A FREE pool profile whose recorded policy refusal overlaps the require:
+  // standing proof that minting again would be refused too. Only free
+  // profiles count — a parked probe consumed by a plain session (it is a
+  // valid plain identity) stops suppressing, so pool growth is bounded by
+  // real identity consumption, exactly like plain auto-provision.
+  private async freeRefusedProbe(
+    require: string[], exclude: string[],
+  ): Promise<string | undefined> {
+    for (const { name, profile } of listPool(this.opts.base)) {
+      if (exclude.includes(name)) continue;
+      const refused = profile.refusedCapabilities ?? [];
+      if (!require.some((cap) => refused.includes(cap))) continue;
+      const probe = await claimSpecific(name, { base: this.opts.base });
+      if (probe) {
+        probe.release(); // freeness check only — never held
+        return name;
+      }
+    }
+    return undefined;
   }
 
   private setHeld(claim: Claim): void {
@@ -119,6 +181,9 @@ export class ClaimManager {
     const identity = await this.held!.client.register();
     this.held!.claim.profile.agentId = identity.agentId;
     this.held!.claim.profile.address = identity.address;
+    // Record server-known capabilities when the response carries them (an
+    // older server omits the field — keep what the profile already has).
+    if (identity.capabilities) this.held!.claim.profile.capabilities = identity.capabilities;
     savePoolProfile(
       { ...this.held!.claim.profile, agentId: identity.agentId }, this.opts.base,
     );
