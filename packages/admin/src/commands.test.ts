@@ -2,7 +2,7 @@ import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, UpdateComm
 import { mockClient } from "aws-sdk-client-mock";
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { createFleetKey, listAgents, revokeAgent, tagAgent, untagAgent } from "./commands.js";
+import { createAdminKey, createFleetKey, listAgents, revokeAgent, tagAgent, untagAgent } from "./commands.js";
 
 const ddb = mockClient(DynamoDBDocumentClient);
 beforeEach(() => ddb.reset());
@@ -16,6 +16,27 @@ describe("mailctl commands", () => {
     expect(item.PK).toBe(`FLEET#${createHash("sha256").update(key).digest("hex")}`);
     expect(JSON.stringify(item)).not.toContain(key);
     expect(item.label).toBe("ci");
+  });
+
+  it("createAdminKey stores only the sha256 hash under ADMINKEY# and returns the secret once", async () => {
+    ddb.on(PutCommand).resolves({});
+    const key = await createAdminKey(ddb as never, "tbl", "ops");
+    expect(key).toMatch(/^[0-9a-f]{64}$/);
+    const item = ddb.commandCalls(PutCommand)[0].args[0].input.Item!;
+    expect(item.PK).toBe(`ADMINKEY#${createHash("sha256").update(key).digest("hex")}`);
+    expect(item.SK).toBe("ADMINKEY");
+    expect(JSON.stringify(item)).not.toContain(key);
+    expect(item.label).toBe("ops");
+  });
+
+  it("admin keys and fleet keys land in distinct namespaces", async () => {
+    ddb.on(PutCommand).resolves({});
+    await createFleetKey(ddb as never, "tbl", "x");
+    await createAdminKey(ddb as never, "tbl", "x");
+    const [fleet, admin] = ddb.commandCalls(PutCommand).map((c) => c.args[0].input.Item!);
+    expect(fleet.PK).toMatch(/^FLEET#/);
+    expect(admin.PK).toMatch(/^ADMINKEY#/);
+    expect(fleet.SK).not.toBe(admin.SK);
   });
 
   it("listAgents scans AGENT records", async () => {

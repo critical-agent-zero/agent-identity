@@ -5,6 +5,10 @@ import type { NoncesRepo } from "./db/nonces.js";
 
 const SKEW_MS = 300_000;
 
+// mailctl mints admin keys as 64 hex chars; the bound rejects oversized
+// headers before any hashing (#9's fixed-format concern).
+const MAX_ADMIN_KEY_CHARS = 128;
+
 declare module "hono" {
   interface ContextVariableMap {
     agent: AgentRecord;
@@ -48,6 +52,18 @@ export function signatureAuth(agents: AgentsRepo, nonces: NoncesRepo): Middlewar
     if (!agent) return c.json({ error: "unknown agent" }, 401);
     if (agent.status !== "active") return c.json({ error: "revoked" }, 403);
     c.set("agent", agent);
+    return next();
+  };
+}
+
+// Operator-only gate: x-admin-key is the ONLY accepted credential — fleet
+// keys and agent signatures never authorize admin routes. Missing, oversized,
+// and unknown keys all get the same opaque 403 so probes learn nothing.
+export function adminKeyAuth(agents: AgentsRepo): MiddlewareHandler {
+  return async (c, next) => {
+    const key = c.req.header("x-admin-key");
+    if (!key || key.length > MAX_ADMIN_KEY_CHARS) return c.json({ error: "forbidden" }, 403);
+    if (!(await agents.verifyAdminKey(key))) return c.json({ error: "forbidden" }, 403);
     return next();
   };
 }

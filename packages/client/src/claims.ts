@@ -68,6 +68,18 @@ export function linkGithub(agentId: string, link: GithubLink, base?: string): vo
   writeFileSync(file, JSON.stringify({ ...profile, github: link }, null, 2), { mode: 0o600 });
 }
 
+export function unlinkGithub(agentId: string, base?: string): void {
+  const file = join(poolDir(base), `${agentId}.json`);
+  let profile: PoolProfile;
+  try {
+    profile = JSON.parse(readFileSync(file, "utf8")) as PoolProfile;
+  } catch {
+    throw new Error(`no pool profile named ${agentId} in ${poolDir(base)}`);
+  }
+  const { github, ...rest } = profile;
+  writeFileSync(file, JSON.stringify(rest, null, 2), { mode: 0o600 });
+}
+
 export interface Claim {
   name: string;
   profile: PoolProfile;

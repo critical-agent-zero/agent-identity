@@ -79,6 +79,46 @@ export class AgentsRepo {
     return Item !== undefined;
   }
 
+  // ADMINKEY# is a namespace distinct from FLEET#: a fleet key (held by
+  // agents for auto-provisioning) can never satisfy an admin-key lookup.
+  async verifyAdminKey(adminKey: string): Promise<boolean> {
+    const hash = createHash("sha256").update(adminKey).digest("hex");
+    const { Item } = await this.ddb.send(new GetCommand({
+      TableName: this.table, Key: { PK: `ADMINKEY#${hash}`, SK: "ADMINKEY" },
+    }));
+    return Item !== undefined;
+  }
+
+  private async setCapabilities(
+    agentId: string, mutate: (caps: Set<string>) => void,
+  ): Promise<string[] | undefined> {
+    const { Item: mirror } = await this.ddb.send(new GetCommand({
+      TableName: this.table, Key: { PK: `ADDR#${agentId}`, SK: "ADDR" },
+    }));
+    if (!mirror) return undefined;
+    const key = { PK: `AGENT#${mirror.fingerprint as string}`, SK: "AGENT" };
+    const { Item } = await this.ddb.send(new GetCommand({ TableName: this.table, Key: key }));
+    if (!Item) return undefined;
+    const caps = new Set<string>((Item.capabilities as string[]) ?? []);
+    mutate(caps);
+    const sorted = [...caps].sort();
+    await this.ddb.send(new UpdateCommand({
+      TableName: this.table,
+      Key: key,
+      UpdateExpression: "SET capabilities = :c",
+      ExpressionAttributeValues: { ":c": sorted },
+    }));
+    return sorted;
+  }
+
+  addCapability(agentId: string, capability: string): Promise<string[] | undefined> {
+    return this.setCapabilities(agentId, (caps) => caps.add(capability));
+  }
+
+  removeCapability(agentId: string, capability: string): Promise<string[] | undefined> {
+    return this.setCapabilities(agentId, (caps) => caps.delete(capability));
+  }
+
   async revoke(fp: string): Promise<void> {
     await this.ddb.send(new UpdateCommand({
       TableName: this.table,

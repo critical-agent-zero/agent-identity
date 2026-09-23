@@ -15,6 +15,21 @@ export async function createFleetKey(
   return key;
 }
 
+// ADMINKEY# is deliberately a separate namespace from FLEET#: agents hold
+// fleet keys for auto-provisioning and must never be able to use one to
+// grant capabilities.
+export async function createAdminKey(
+  ddb: DynamoDBDocumentClient, table: string, label: string,
+): Promise<string> {
+  const key = randomBytes(32).toString("hex");
+  const hash = createHash("sha256").update(key).digest("hex");
+  await ddb.send(new PutCommand({
+    TableName: table,
+    Item: { PK: `ADMINKEY#${hash}`, SK: "ADMINKEY", label, createdAt: new Date().toISOString() },
+  }));
+  return key;
+}
+
 export interface AgentRow {
   fingerprint: string;
   agentId: string;

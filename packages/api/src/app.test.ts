@@ -30,6 +30,9 @@ function makeDeps(overrides: Record<string, unknown> = {}): Deps {
       getByFingerprint: vi.fn(async () => agent),
       register: vi.fn(async () => ({ agentId: "482913", address: "482913@d" })),
       verifyFleetKey: vi.fn(async () => true),
+      verifyAdminKey: vi.fn(async (k: string) => k === "adm-good"),
+      addCapability: vi.fn(async () => ["github"]),
+      removeCapability: vi.fn(async () => []),
       ...overrides,
     } as never,
     emails: {
@@ -160,5 +163,116 @@ describe("app", () => {
     const body = await res.json();
     expect(body.text).toBe("overflow");
     expect(deps.readBody).toHaveBeenCalledWith("bodies/482913/01ABC.json");
+  });
+});
+
+describe("admin capability routes", () => {
+  const grantPath = "/admin/agents/482913/capabilities";
+  const grant = (headers: Record<string, string>, body = JSON.stringify({ capability: "github" })) => ({
+    method: "POST", body, headers: { "content-type": "application/json", ...headers },
+  });
+
+  it("POST grants a capability with a valid admin key", async () => {
+    const deps = makeDeps();
+    const app = createApp(deps);
+    const res = await app.request(grantPath, grant({ "x-admin-key": "adm-good" }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ agentId: "482913", capabilities: ["github"] });
+    expect((deps.agents as never as { addCapability: unknown }).addCapability)
+      .toHaveBeenCalledWith("482913", "github");
+  });
+
+  it("DELETE removes a capability with a valid admin key", async () => {
+    const deps = makeDeps();
+    const app = createApp(deps);
+    const res = await app.request(`${grantPath}/github`, {
+      method: "DELETE", headers: { "x-admin-key": "adm-good" },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ agentId: "482913", capabilities: [] });
+    expect((deps.agents as never as { removeCapability: unknown }).removeCapability)
+      .toHaveBeenCalledWith("482913", "github");
+  });
+
+  it("missing admin key is 403 without consulting key verification", async () => {
+    const deps = makeDeps();
+    const app = createApp(deps);
+    const res = await app.request(grantPath, grant({}));
+    expect(res.status).toBe(403);
+    const a = deps.agents as never as { verifyAdminKey: ReturnType<typeof vi.fn>; addCapability: ReturnType<typeof vi.fn> };
+    expect(a.verifyAdminKey).not.toHaveBeenCalled();
+    expect(a.addCapability).not.toHaveBeenCalled();
+  });
+
+  it("invalid admin key is 403 with a body identical to the missing-key case", async () => {
+    const app = createApp(makeDeps());
+    const missing = await app.request(grantPath, grant({}));
+    const invalid = await app.request(grantPath, grant({ "x-admin-key": "adm-wrong" }));
+    expect(invalid.status).toBe(403);
+    expect(await invalid.text()).toBe(await missing.text());
+  });
+
+  it("the fleet key is not accepted via x-fleet-key", async () => {
+    const deps = makeDeps();
+    const app = createApp(deps);
+    const res = await app.request(grantPath, grant({ "x-fleet-key": "fk" }));
+    expect(res.status).toBe(403);
+    const a = deps.agents as never as { verifyFleetKey: ReturnType<typeof vi.fn>; addCapability: ReturnType<typeof vi.fn> };
+    expect(a.verifyFleetKey).not.toHaveBeenCalled();
+    expect(a.addCapability).not.toHaveBeenCalled();
+  });
+
+  it("a fleet key pasted into x-admin-key fails the admin lookup", async () => {
+    // verifyAdminKey only matches ADMINKEY# records; the mock mirrors that by
+    // rejecting anything but the minted admin key.
+    const deps = makeDeps();
+    const app = createApp(deps);
+    const res = await app.request(grantPath, grant({ "x-admin-key": "fleet-key-value" }));
+    expect(res.status).toBe(403);
+  });
+
+  it("a valid agent signature is not accepted in place of the admin key", async () => {
+    const deps = makeDeps();
+    const app = createApp(deps);
+    const body = JSON.stringify({ capability: "github" });
+    const req = signed("POST", grantPath, body);
+    const res = await app.request(grantPath, req);
+    expect(res.status).toBe(403);
+    const a = deps.agents as never as { getByFingerprint: ReturnType<typeof vi.fn>; addCapability: ReturnType<typeof vi.fn> };
+    expect(a.getByFingerprint).not.toHaveBeenCalled();
+    expect(a.addCapability).not.toHaveBeenCalled();
+  });
+
+  it("an oversized admin key is rejected before any verification", async () => {
+    const deps = makeDeps();
+    const app = createApp(deps);
+    const res = await app.request(grantPath, grant({ "x-admin-key": "a".repeat(10_000) }));
+    expect(res.status).toBe(403);
+    expect((deps.agents as never as { verifyAdminKey: ReturnType<typeof vi.fn> }).verifyAdminKey)
+      .not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed capability with 400", async () => {
+    const deps = makeDeps();
+    const app = createApp(deps);
+    for (const body of ["{nope", JSON.stringify({}), JSON.stringify({ capability: "../ADMIN" })]) {
+      const res = await app.request(grantPath, grant({ "x-admin-key": "adm-good" }, body));
+      expect(res.status).toBe(400);
+    }
+    expect((deps.agents as never as { addCapability: ReturnType<typeof vi.fn> }).addCapability)
+      .not.toHaveBeenCalled();
+  });
+
+  it("404s for an unknown agentId", async () => {
+    const deps = makeDeps({ addCapability: vi.fn(async () => undefined) as never });
+    const app = createApp(deps);
+    const res = await app.request(grantPath, grant({ "x-admin-key": "adm-good" }));
+    expect(res.status).toBe(404);
+  });
+
+  it("the admin key does not authorize agent routes", async () => {
+    const app = createApp(makeDeps());
+    const res = await app.request("/me", { headers: { "x-admin-key": "adm-good" } });
+    expect(res.status).toBe(401);
   });
 });
