@@ -101,10 +101,10 @@ describe("publicView — forge events", () => {
   it("includes forge events only for allowlisted repos; private repos are ABSENT from the serialized output", () => {
     const events = [
       ev({ type: "forge_commit", summary: "committed to critical-labs/core@main",
-        detail: { service: "github", repo: "critical-labs/core", branch: "main", sha: "abc" },
+        detail: { service: "github", repo: "critical-labs/core", branch: "main", sha: "abc", visibility: "public" },
         ref: "https://github.com/critical-labs/core/commit/abc" }),
       ev({ type: "forge_commit", summary: "committed to mc/homefree@main",
-        detail: { service: "github", repo: "mc/homefree", branch: "main", sha: "def" },
+        detail: { service: "github", repo: "mc/homefree", branch: "main", sha: "def", visibility: "public" },
         ref: "https://github.com/mc/homefree/commit/def" }),
     ];
     const view = publicView(events, [], ALLOW);
@@ -117,8 +117,8 @@ describe("publicView — forge events", () => {
 
   it("excluded events leave no placeholder, count, or tempo signal", () => {
     const events = [
-      ev({ type: "forge_pr", detail: { service: "github", repo: "mc/homefree", number: 7 } }),
-      ev({ type: "forge_comment", detail: { service: "github", repo: "mc/homefree", issue: 1 } }),
+      ev({ type: "forge_pr", detail: { service: "github", repo: "mc/homefree", number: 7, visibility: "public" } }),
+      ev({ type: "forge_comment", detail: { service: "github", repo: "mc/homefree", issue: 1, visibility: "public" } }),
     ];
     const view = publicView(events, [], ALLOW);
     expect(view.events).toEqual([]);
@@ -127,20 +127,20 @@ describe("publicView — forge events", () => {
 
   it("empty allowlist shows no forge events at all", () => {
     const events = [
-      ev({ type: "forge_commit", detail: { service: "github", repo: "critical-labs/core", branch: "m", sha: "a" } }),
+      ev({ type: "forge_commit", detail: { service: "github", repo: "critical-labs/core", branch: "m", sha: "a", visibility: "public" } }),
     ];
     expect(publicView(events, [], []).events).toEqual([]);
   });
 
   it("drops forge events with no repo-shaped detail (fail-closed)", () => {
     expect(publicView([ev({ type: "forge_commit" })], [], ALLOW).events).toEqual([]);
-    expect(publicView([ev({ type: "forge_commit", detail: { service: "github" } })], [], ALLOW).events).toEqual([]);
+    expect(publicView([ev({ type: "forge_commit", detail: { service: "github", visibility: "public" } })], [], ALLOW).events).toEqual([]);
   });
 
   it("drops a claimed event laundered with a forge type, even for an allowlisted repo", () => {
     const events = [ev({
       class: "claimed", type: "forge_commit",
-      detail: { service: "github", repo: "critical-labs/core", branch: "m", sha: "a" },
+      detail: { service: "github", repo: "critical-labs/core", branch: "m", sha: "a", visibility: "public" },
     })];
     expect(publicView(events, [], ALLOW).events).toEqual([]);
   });
@@ -148,7 +148,7 @@ describe("publicView — forge events", () => {
   it("forge_fork requires BOTH source and fork to be allowlisted", () => {
     const fork = (source: string, target: string) => ev({
       type: "forge_fork", summary: `forked ${source} to ${target}`,
-      detail: { service: "github", source, fork: target },
+      detail: { service: "github", source, fork: target, visibility: "public" },
     });
     expect(publicView([fork("critical-labs/core", "critical-labs/core-fork")], [], ALLOW).events).toHaveLength(1);
     // fork landed in a non-allowlisted account: the whole event is absent
@@ -161,7 +161,7 @@ describe("publicView — forge events", () => {
     const events = [ev({
       type: "forge_commit",
       detail: {
-        service: "github", repo: "critical-labs/core", branch: "m", sha: "a",
+        service: "github", repo: "critical-labs/core", branch: "m", sha: "a", visibility: "public",
         stray: "mc/homefree", operatorEmail: "op@example.com",
       },
     })];
@@ -172,10 +172,48 @@ describe("publicView — forge events", () => {
   });
 });
 
+describe("publicView — forge visibility gate", () => {
+  const commitTo = (repo: string, extra: Record<string, string | number | boolean> = {}) => ev({
+    detail: { service: "github", repo, branch: "m", sha: "a", ...extra },
+  });
+
+  it("requires the proxy's attestation-time stamp: detail.visibility === 'public'", () => {
+    expect(publicView([commitTo("critical-labs/core", { visibility: "public" })], [], ALLOW)
+      .events).toHaveLength(1);
+  });
+
+  it("drops an allowlisted-name event whose visibility stamp is missing — pre-stamp history stays private", () => {
+    expect(publicView([commitTo("critical-labs/core")], [], ALLOW).events).toEqual([]);
+  });
+
+  it("drops 'private' and anything that is not the exact string 'public'", () => {
+    for (const bad of ["private", "internal", "PUBLIC", true] as const) {
+      expect(publicView([commitTo("critical-labs/core", { visibility: bad as never })], [], ALLOW)
+        .events, JSON.stringify(bad)).toEqual([]);
+    }
+  });
+
+  it("gates every forge type, fork included", () => {
+    const fork = ev({
+      type: "forge_fork",
+      detail: { service: "github", source: "critical-labs/core", fork: "critical-labs/core-fork" },
+    });
+    expect(publicView([fork], [], ALLOW).events).toEqual([]);
+    expect(publicView([{ ...fork, detail: { ...fork.detail, visibility: "public" } }], [], ALLOW)
+      .events).toHaveLength(1);
+  });
+
+  it("the stamp is a gate, not payload: 'visibility' is absent from the public output", () => {
+    const view = publicView([commitTo("critical-labs/core", { visibility: "public" })], [], ALLOW);
+    expect(view.events).toHaveLength(1);
+    expect(JSON.stringify(view)).not.toContain("visibility");
+  });
+});
+
 describe("publicView — ref re-validation", () => {
   const commit = (ref?: string) => ev({
     type: "forge_commit",
-    detail: { service: "github", repo: "critical-labs/core", branch: "m", sha: "a" },
+    detail: { service: "github", repo: "critical-labs/core", branch: "m", sha: "a", visibility: "public" },
     ...(ref !== undefined ? { ref } : {}),
   });
 
@@ -321,7 +359,7 @@ describe("publicView — roster", () => {
       { agentId: "700001", capabilities: [] },
     ];
     const events = [
-      ev({ type: "forge_commit", detail: { service: "github", repo: "acme/widgets", branch: "m", sha: "a" } }),
+      ev({ type: "forge_commit", detail: { service: "github", repo: "acme/widgets", branch: "m", sha: "a", visibility: "public" } }),
       ev({ class: "claimed", type: "status", detail: { state: "idle" } }),
       ev({ agentId: "700001", type: "forge_pr", detail: { service: "github", repo: "mc/homefree", number: 1 } }),
     ];

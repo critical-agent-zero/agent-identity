@@ -231,3 +231,31 @@ describe("GithubForge.fork", () => {
     expect(calls[0]!.init.method).toBe("POST");
   });
 });
+
+describe("GithubForge.repoVisibility", () => {
+  const vis = async (json: unknown) => {
+    const { fn } = makeFetch({ [`GET ${B}`]: { json } });
+    return new GithubForge({ credentials, fetch: fn })
+      .repoVisibility({ owner: "o", name: "r" }, actor);
+  };
+
+  it("maps a world-readable repo to 'public'", async () => {
+    expect(await vis({ private: false, visibility: "public" })).toBe("public");
+    // older GHES payloads may omit `visibility`; `private: false` suffices
+    expect(await vis({ private: false })).toBe("public");
+  });
+
+  it("maps private and GHES-internal repos to 'private' (fail closed)", async () => {
+    expect(await vis({ private: true, visibility: "private" })).toBe("private");
+    expect(await vis({ private: false, visibility: "internal" })).toBe("private");
+    // a malformed payload proves nothing: not public
+    expect(await vis({})).toBe("private");
+  });
+
+  it("propagates upstream errors as ForgeErrors (callers decide the fail-closed handling)", async () => {
+    const { fn } = makeFetch({ [`GET ${B}`]: { status: 404, json: { message: "Not Found" } } });
+    await expect(new GithubForge({ credentials, fetch: fn })
+      .repoVisibility({ owner: "o", name: "r" }, actor))
+      .rejects.toMatchObject({ kind: "not_found" });
+  });
+});

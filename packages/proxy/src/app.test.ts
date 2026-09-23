@@ -1,7 +1,7 @@
 import type { AgentRecord, NoncesRepo } from "@agent-identity/api";
 import {
   canonicalString, generateKeypair, sign,
-  type ActivityEvent, type CommitSpec, type PrSpec, type RepoRef,
+  type ActivityEvent, type CommitSpec, type PrSpec, type RepoRef, type RepoVisibility,
 } from "@agent-identity/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createProxyApp, type ProxyDeps } from "./app.js";
@@ -60,6 +60,14 @@ export class FakeForge implements Forge {
     this.calls.push(["fork", ref, actor]);
     if (this.failWith) throw this.failWith;
     return { owner: "fork-acct", repo: ref.name, defaultBranch: "main" };
+  }
+  // Visibility knob: a single value, or per-ref for fork tests.
+  visibility: RepoVisibility | ((ref: RepoRef) => RepoVisibility) = "public";
+  visibilityError?: Error;
+  async repoVisibility(ref: RepoRef, actor: Author): Promise<RepoVisibility> {
+    this.calls.push(["repoVisibility", ref, actor]);
+    if (this.visibilityError) throw this.visibilityError;
+    return typeof this.visibility === "function" ? this.visibility(ref) : this.visibility;
   }
 }
 
@@ -369,6 +377,56 @@ describe("attested activity ledger", () => {
     expect(ledger.events[2].detail).toEqual(expect.objectContaining({
       source: "o/r", fork: "fork-acct/r",
     }));
+  });
+
+  it("stamps detail.visibility 'public' on forge events when the forge reports the repo public", async () => {
+    const { deps, ledger, forge } = ledgered();
+    const app = createProxyApp(deps);
+    const res = await app.request(commitPath, { ...signed("POST", commitPath, commitBody), body: commitBody });
+    expect(res.status).toBe(200);
+    expect(ledger.events[0].detail?.visibility).toBe("public");
+    // stamped from the forge's answer for the event's OWN repo
+    expect(forge.calls).toContainEqual([
+      "repoVisibility", { owner: "o", name: "r" },
+      { name: "482913", email: "482913@agents.example" },
+    ]);
+  });
+
+  it("stamps detail.visibility 'private' when the forge reports the repo private", async () => {
+    const { deps, ledger, forge } = ledgered();
+    forge.visibility = "private";
+    const app = createProxyApp(deps);
+    const res = await app.request(commitPath, { ...signed("POST", commitPath, commitBody), body: commitBody });
+    expect(res.status).toBe(200);
+    expect(ledger.events).toHaveLength(1);
+    expect(ledger.events[0].detail?.visibility).toBe("private");
+  });
+
+  it("a failed visibility lookup writes the event WITHOUT a stamp — fail closed publicly, op unharmed", async () => {
+    const { deps, ledger, forge } = ledgered();
+    forge.visibilityError = new Error("github 500");
+    const app = createProxyApp(deps);
+    const res = await app.request(commitPath, { ...signed("POST", commitPath, commitBody), body: commitBody });
+    expect(res.status).toBe(200);
+    expect(ledger.events).toHaveLength(1);
+    // No stamp at all: the public tier requires the exact string "public",
+    // so an unstamped event can never be shown there.
+    expect(ledger.events[0].detail).not.toHaveProperty("visibility");
+  });
+
+  it("forge_fork stamps 'public' only when BOTH source and fork are public", async () => {
+    const fPath = "/forge/github/fork";
+    const fBody = JSON.stringify({ owner: "o", repo: "r" });
+
+    const pub = ledgered();
+    await createProxyApp(pub.deps).request(fPath, { ...signed("POST", fPath, fBody), body: fBody });
+    expect(pub.ledger.events[0].detail?.visibility).toBe("public");
+
+    const mixed = ledgered();
+    // the fork landed in a namespace whose copy reads private
+    mixed.forge.visibility = (ref) => (ref.owner === "fork-acct" ? "private" : "public");
+    await createProxyApp(mixed.deps).request(fPath, { ...signed("POST", fPath, fBody), body: fBody });
+    expect(mixed.ledger.events[0].detail?.visibility).toBe("private");
   });
 
   it("maps provision to capability_granted and never records username or address", async () => {

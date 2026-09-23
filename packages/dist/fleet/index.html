@@ -76,7 +76,7 @@ footer b{color:var(--dim)}
   <input id="in-key" placeholder="Viewer key" autocomplete="off" spellcheck="false">
   <button id="go">Connect</button>
   <button id="go-public" class="alt">View public fleet</button>
-  <div class="hint">Public fleet needs the API URL only — no key. It shows allowlisted repositories only; anything else is simply absent.</div>
+  <div class="hint">Public fleet needs the API URL only — no key. It shows allowlisted public repositories only; anything else is simply absent.</div>
   <div id="err"></div>
 </div>
 <main hidden>
@@ -209,7 +209,7 @@ async function refresh() {
     renderAgents(roster.agents || roster);
     renderEvents(feed.events || feed);
     $("meta").textContent =
-      (state.pub ? "public view — allowlisted repositories only" : "read-only") +
+      (state.pub ? "public view — allowlisted public repositories only" : "read-only") +
       " · refreshed " + new Date().toTimeString().slice(0, 8);
     $("err") && ($("err").textContent = "");
   } catch (err) {

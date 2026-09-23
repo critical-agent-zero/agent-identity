@@ -1,6 +1,6 @@
 import type {
   CommentResult, CommitResult, CommitSpec, ForgeProvisionResult, ForkResult, PrResult, PrSpec,
-  RepoInfo, RepoRef,
+  RepoInfo, RepoRef, RepoVisibility,
 } from "@agent-identity/shared";
 
 /** The acting identity: name is the agentId, email its mailbox address.
@@ -46,6 +46,13 @@ export interface Forge {
   openPullRequest(ref: RepoRef, spec: PrSpec, actor: Author): Promise<PrResult>;
   comment(ref: RepoRef, issue: number, body: string, actor: Author): Promise<CommentResult>;
   fork(ref: RepoRef, actor: Author): Promise<ForkResult>;
+  /** The repo's ACTUAL visibility on the forge right now. Adapters answer
+   *  "public" ONLY for a world-readable repo; private, internal, and
+   *  malformed upstream payloads all collapse to "private". The proxy uses
+   *  this to stamp attested forge events — the public fleet tier shows a
+   *  forge event only when that stamp is exactly "public", so a name
+   *  allowlist (owner/*) can never publish a private repo. */
+  repoVisibility(ref: RepoRef, actor: Author): Promise<RepoVisibility>;
 }
 
 export interface CredentialStore {

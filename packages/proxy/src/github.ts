@@ -1,5 +1,6 @@
 import type {
   CommentResult, CommitResult, CommitSpec, ForkResult, PrResult, PrSpec, RepoInfo, RepoRef,
+  RepoVisibility,
 } from "@agent-identity/shared";
 import {
   ForgeError, type Author, type CredentialStore, type Forge,
@@ -147,5 +148,16 @@ export class GithubForge implements Forge {
     const f = await this.gh<{ name: string; owner: { login: string }; default_branch: string }>(
       "POST", `${this.repoPath(ref)}/forks`, actor.name);
     return { owner: f.owner.login, repo: f.name, defaultBranch: f.default_branch };
+  }
+
+  async repoVisibility(ref: RepoRef, actor: Author): Promise<RepoVisibility> {
+    const r = await this.gh<{ private?: boolean; visibility?: string }>(
+      "GET", this.repoPath(ref), actor.name);
+    // "public" only when the payload AFFIRMS world-readability: private must
+    // be exactly false, and any `visibility` field (GHES adds "internal")
+    // must be exactly "public" when present. Anything else — including a
+    // malformed payload — proves nothing and reads as private.
+    return r.private === false && (r.visibility === undefined || r.visibility === "public")
+      ? "public" : "private";
   }
 }

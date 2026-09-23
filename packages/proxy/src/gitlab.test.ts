@@ -197,3 +197,21 @@ describe("GitlabForge.fork", () => {
     expect(fork).toEqual({ owner: "agent-482913", repo: "r", defaultBranch: "main" });
   });
 });
+
+describe("GitlabForge.repoVisibility", () => {
+  const vis = async (json: unknown) => {
+    const { fn } = makeFetch({ [`GET ${P}`]: { json } });
+    return new GitlabForge({ credentials, fetch: fn })
+      .repoVisibility({ owner: "o", name: "r" }, actor);
+  };
+
+  it("maps only visibility 'public' to 'public'", async () => {
+    expect(await vis({ visibility: "public" })).toBe("public");
+  });
+
+  it("maps 'internal', 'private', and missing visibility to 'private' (fail closed)", async () => {
+    expect(await vis({ visibility: "internal" })).toBe("private");
+    expect(await vis({ visibility: "private" })).toBe("private");
+    expect(await vis({})).toBe("private");
+  });
+});

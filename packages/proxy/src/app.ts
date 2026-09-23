@@ -1,7 +1,10 @@
 import {
   signatureAuth, type AgentRecord, type AgentsRepo, type NoncesRepo,
 } from "@agent-identity/api";
-import { sanitizeAttestedEvent, type ActivityEvent } from "@agent-identity/shared";
+import {
+  sanitizeAttestedEvent,
+  type ActivityEvent, type RepoRef, type RepoVisibility,
+} from "@agent-identity/shared";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import {
@@ -60,9 +63,28 @@ export function createProxyApp(deps: ProxyDeps): Hono {
     return { service, forge, agent, actor: { name: agent.agentId, email: agent.address } };
   };
 
+  // Fail-closed visibility stamp for attested forge events. The public
+  // fleet tier publishes a forge event ONLY when detail.visibility is the
+  // exact string "public" (shared/public-fleet.ts): a name allowlist alone
+  // cannot know a repo's actual visibility, so the proxy — which holds a
+  // live forge credential — asks the forge at attestation time. "public"
+  // is stamped only when EVERY named repo reads public; a failed lookup
+  // stamps nothing, which keeps the event out of the public tier while
+  // preserving it in the keyed ledger.
+  const visibilityStamp = async (
+    g: Guarded, refs: RepoRef[],
+  ): Promise<{ visibility?: RepoVisibility }> => {
+    try {
+      const all = await Promise.all(refs.map((r) => g.forge.repoVisibility(r, g.actor)));
+      return { visibility: all.every((v) => v === "public") ? "public" : "private" };
+    } catch {
+      return {};
+    }
+  };
+
   const run = async <T>(
     c: Context, g: Guarded, op: ForgeOp, call: () => Promise<T>,
-    attest?: (result: T) => Attestation,
+    attest?: (result: T) => Attestation | Promise<Attestation>,
   ): Promise<Response> => {
     const base = {
       agentId: g.agent.agentId, service: op.service, op: op.kind,
@@ -85,7 +107,7 @@ export function createProxyApp(deps: ProxyDeps): Hono {
           // means no route can forget it.
           await deps.activity.putEvent(sanitizeAttestedEvent({
             agentId: g.agent.agentId, ts: new Date().toISOString(),
-            class: "attested", ...attest(result),
+            class: "attested", ...(await attest(result)),
           }));
         } catch (ledgerErr) {
           // The forge operation already succeeded; a ledger outage must
@@ -157,10 +179,13 @@ export function createProxyApp(deps: ProxyDeps): Hono {
         files: b.files as { path: string; content: string }[],
       },
       g.actor,
-    ), (r) => ({
+    ), async (r) => ({
       type: "forge_commit",
       summary: `committed to ${repo}@${b.branch}`,
-      detail: { service: g.service, repo, branch: b.branch as string, sha: r.sha },
+      detail: {
+        service: g.service, repo, branch: b.branch as string, sha: r.sha,
+        ...(await visibilityStamp(g, [{ owner: b.owner as string, name: b.repo as string }])),
+      },
       ref: r.url,
     }));
   });
@@ -183,10 +208,13 @@ export function createProxyApp(deps: ProxyDeps): Hono {
         title: b.title as string, body: `${b.body}${footer}`,
       },
       g.actor,
-    ), (r) => ({
+    ), async (r) => ({
       type: "forge_pr",
       summary: `opened PR #${r.number} on ${repo}`,
-      detail: { service: g.service, repo, number: r.number },
+      detail: {
+        service: g.service, repo, number: r.number,
+        ...(await visibilityStamp(g, [{ owner: b.owner as string, name: b.repo as string }])),
+      },
       ref: r.url,
     }));
   });
@@ -205,10 +233,13 @@ export function createProxyApp(deps: ProxyDeps): Hono {
     return run(c, g, op, () => g.forge.comment(
       { owner: b.owner as string, name: b.repo as string },
       b.issue as number, `${b.body}${footer}`, g.actor,
-    ), (r) => ({
+    ), async (r) => ({
       type: "forge_comment",
       summary: `commented on ${repo}#${b.issue}`,
-      detail: { service: g.service, repo, issue: b.issue as number },
+      detail: {
+        service: g.service, repo, issue: b.issue as number,
+        ...(await visibilityStamp(g, [{ owner: b.owner as string, name: b.repo as string }])),
+      },
       ref: r.url,
     }));
   });
@@ -222,10 +253,17 @@ export function createProxyApp(deps: ProxyDeps): Hono {
     const source = `${b.owner}/${b.repo}`;
     return run(c, g, op,
       () => g.forge.fork({ owner: b.owner as string, name: b.repo as string }, g.actor),
-      (r) => ({
+      async (r) => ({
         type: "forge_fork",
         summary: `forked ${source} to ${r.owner}/${r.repo}`,
-        detail: { service: g.service, source, fork: `${r.owner}/${r.repo}` },
+        detail: {
+          service: g.service, source, fork: `${r.owner}/${r.repo}`,
+          // A fork event names TWO repos; it is public only when both are.
+          ...(await visibilityStamp(g, [
+            { owner: b.owner as string, name: b.repo as string },
+            { owner: r.owner, name: r.repo },
+          ])),
+        },
       }));
   });
 

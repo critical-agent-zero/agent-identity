@@ -32,11 +32,11 @@ const agent = {
 const FLEET_EVENTS = [
   { agentId: "482913", ts: "2026-09-23T12:00:03.000Z", class: "attested", type: "forge_commit",
     summary: "committed to critical-labs/core@main",
-    detail: { service: "github", repo: "critical-labs/core", branch: "main", sha: "abc" },
+    detail: { service: "github", repo: "critical-labs/core", branch: "main", sha: "abc", visibility: "public" },
     ref: "https://github.com/critical-labs/core/commit/abc" },
   { agentId: "482913", ts: "2026-09-23T12:00:02.000Z", class: "attested", type: "forge_commit",
     summary: "committed to mc/homefree@main",
-    detail: { service: "github", repo: "mc/homefree", branch: "main", sha: "ddd" },
+    detail: { service: "github", repo: "mc/homefree", branch: "main", sha: "ddd", visibility: "public" },
     ref: "https://github.com/mc/homefree/commit/ddd" },
   { agentId: "482913", ts: "2026-09-23T12:00:01.000Z", class: "claimed", type: "status",
     summary: "status: working — homefree billing fix",
@@ -163,7 +163,7 @@ describe("public fleet routes — parameters cannot widen output", () => {
     const many = Array.from({ length: 200 }, (_, i) => ({
       agentId: "482913", ts: `2026-09-23T11:${String(i % 60).padStart(2, "0")}:00.000Z`,
       class: "attested", type: "forge_commit", summary: "committed to critical-labs/core@main",
-      detail: { service: "github", repo: "critical-labs/core", branch: "main", sha: `s${i}` },
+      detail: { service: "github", repo: "critical-labs/core", branch: "main", sha: `s${i}`, visibility: "public" },
     }));
     const deps = makeDeps({ listFleetEvents: vi.fn(async () => ({ events: many })) as never });
     const app = createApp(deps);

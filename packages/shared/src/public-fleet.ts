@@ -131,6 +131,16 @@ export function projectPublicEvent(
     // field must exist AND match the allowlist.
     if (e.class !== "attested" || e.detail === undefined) return undefined;
     const detail = e.detail;
+    // The name allowlist is necessary but NOT sufficient: an "owner/*"
+    // pattern also covers every PRIVATE repo that owner has or later gains.
+    // The proxy therefore stamps detail.visibility with the repo's ACTUAL
+    // visibility, read from the forge at attestation time, and only the
+    // exact string "public" opens the public tier. A missing stamp (events
+    // attested before stamping existed, or a writer that forgot), "private",
+    // or any other value keeps the event out — fail closed. The stamp is a
+    // gate, not payload: it is not in any detailFields list, so it never
+    // appears in the public output.
+    if (detail.visibility !== "public") return undefined;
     const repos = rule.repoFields.map((f) => detail[f]);
     if (!repos.every((r) => repoMatchesAllowlist(r, allowlist))) return undefined;
     const publicDetail = Object.fromEntries(
