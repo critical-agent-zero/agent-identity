@@ -113,7 +113,17 @@ function isForgeSenderDomain(domain: unknown): domain is string {
   );
 }
 
-function projectEvent(e: ActivityEvent, allowlist: readonly string[]): ActivityEvent | undefined {
+/** Project ONE event for the public tier: the projected event, or undefined
+ *  when the event must not appear publicly. Exported so storage reads can be
+ *  projection-aware: a reader that fetches a fixed RAW window and projects
+ *  afterwards lets excluded (private) events displace public ones from the
+ *  window — turning feed deltas into a public read-out of private volume,
+ *  and vanishing legitimately publishable events. Callers page/filter with
+ *  this predicate until `limit` PUBLIC events are collected or the log is
+ *  exhausted (see the API's /fleet/public routes). */
+export function projectPublicEvent(
+  e: ActivityEvent, allowlist: readonly string[],
+): ActivityEvent | undefined {
   const rule = FORGE_RULES[e.type];
   if (rule) {
     // Forge events must be attested (the write path guarantees it; a
@@ -192,7 +202,10 @@ export interface PublicFleetView {
 }
 
 /** Pure projection for the unauthenticated fleet tier. Excluded events are
- *  ABSENT — no placeholder, no count, no tempo signal. */
+ *  ABSENT — no placeholder, no count. NOTE: absence alone does not remove
+ *  the tempo side channel; that also requires the caller's storage read to
+ *  be projection-aware (projectPublicEvent above), so that excluded events
+ *  can never displace public ones from a fixed pre-projection window. */
 export function publicView(
   events: readonly ActivityEvent[],
   roster: readonly PublicRosterInput[],
@@ -200,7 +213,7 @@ export function publicView(
 ): PublicFleetView {
   const publicEvents: ActivityEvent[] = [];
   for (const e of events) {
-    const projected = projectEvent(e, allowlist);
+    const projected = projectPublicEvent(e, allowlist);
     if (projected) publicEvents.push(projected);
   }
 

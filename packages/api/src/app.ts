@@ -1,5 +1,6 @@
 import {
-  fingerprint, publicView, sanitizeActivityText, STATUS_LABEL_MAX, STATUS_STATES, TASK_NOTE_MAX,
+  fingerprint, projectPublicEvent, publicView, sanitizeActivityText,
+  STATUS_LABEL_MAX, STATUS_STATES, TASK_NOTE_MAX,
   type ActivityEvent, type AgentStatusState,
 } from "@agent-identity/shared";
 import { Hono } from "hono";
@@ -74,18 +75,30 @@ export function createApp(deps: Deps): Hono {
   // repos on the deps.publicRepos allowlist (default empty = none), status
   // without labels, task notes never, refs re-validated. Excluded events are
   // absent — no placeholder, no count. No request parameter can widen the
-  // output: limit is clamped, nothing else is honored, and the source window
-  // read from storage is fixed server-side.
+  // output: limit is clamped and nothing else is honored.
+  //
+  // The storage read is PROJECTION-AWARE: the repo applies isPublicEvent
+  // over the whole log before its limit, so it collects public events until
+  // `limit` or exhaustion. Reading a fixed RAW window and projecting
+  // afterwards would let private events displace public ones — emptying the
+  // feed of publishable events and letting an unauthenticated observer read
+  // private-event volume out of the deltas (the tempo side channel).
   const PUBLIC_FEED_DEFAULT = 50;
   const PUBLIC_FEED_MAX = 100;
-  const PUBLIC_SOURCE_WINDOW = 200; // pre-projection read; repo clamps to its own max
+  // Post-projection bound for the roster's per-agent counts (the repo's own
+  // fleet-feed max). Counts saturate there as a function of PUBLIC activity
+  // only — private volume cannot displace public events or move the numbers.
+  const PUBLIC_COUNT_WINDOW = 200;
 
   const publicFleet = new Hono();
+
+  const isPublicEvent = (e: ActivityEvent): boolean =>
+    projectPublicEvent(e, deps.publicRepos) !== undefined;
 
   publicFleet.get("/agents", async (c) => {
     const [roster, feed] = await Promise.all([
       deps.activity.fleetRoster(),
-      deps.activity.listFleetEvents({ limit: PUBLIC_SOURCE_WINDOW }),
+      deps.activity.listFleetEvents({ limit: PUBLIC_COUNT_WINDOW, filter: isPublicEvent }),
     ]);
     // Roster counts are recomputed over PUBLIC events only — the stored
     // per-class totals would otherwise leak private-work tempo.
@@ -98,7 +111,11 @@ export function createApp(deps: Deps): Hono {
     const limit = Number.isFinite(n)
       ? Math.min(Math.max(Math.trunc(n), 1), PUBLIC_FEED_MAX)
       : PUBLIC_FEED_DEFAULT;
-    const feed = await deps.activity.listFleetEvents({ limit: PUBLIC_SOURCE_WINDOW });
+    const feed = await deps.activity.listFleetEvents({ limit, filter: isPublicEvent });
+    // publicView re-projects what the filter admitted: the projection stays
+    // the single authority on what is public, and a storage fake that
+    // ignores `filter` still cannot leak. The slice is the same
+    // belt-and-suspenders bound against an over-returning repo.
     const { events } = publicView(feed.events, [], deps.publicRepos);
     return c.json({ publicView: true, events: events.slice(0, limit) });
   });

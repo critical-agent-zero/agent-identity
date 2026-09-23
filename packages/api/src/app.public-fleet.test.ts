@@ -170,9 +170,12 @@ describe("public fleet routes — parameters cannot widen output", () => {
     const res = await app.request("/fleet/public/activity?limit=999999");
     const body = await res.json();
     expect(body.events.length).toBe(100);
-    // the source window is fixed server-side regardless of the query
+    // the storage read is clamped server-side regardless of the query, and
+    // it is projection-aware: the repo filters to PUBLIC events before its
+    // limit, so private volume cannot displace public events (no tempo
+    // side channel, no availability loss)
     const listFleetEvents = (deps.activity as never as { listFleetEvents: ReturnType<typeof vi.fn> }).listFleetEvents;
-    expect(listFleetEvents).toHaveBeenCalledWith({ limit: 200 });
+    expect(listFleetEvents).toHaveBeenCalledWith({ limit: 100, filter: expect.any(Function) });
   });
 
   it("defaults a missing/garbage limit and floors a hostile one at 1", async () => {

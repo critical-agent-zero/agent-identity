@@ -117,15 +117,25 @@ export class ActivityRepo {
 
   /** Fleet-wide feed, newest first. Assembled by scanning the ACT rows of
    *  every agent partition and merging in memory — fine at fleet sizes this
-   *  table serves; a busy multi-tenant deployment would add a GSI. */
-  async listFleetEvents(opts: { limit?: number } = {}): Promise<{ events: ActivityEvent[] }> {
+   *  table serves; a busy multi-tenant deployment would add a GSI.
+   *
+   *  `filter` makes the read projection-aware: the scan already reads the
+   *  WHOLE log, so a filtered read collects matching events until `limit`
+   *  or exhaustion. The public fleet tier depends on this — applying the
+   *  limit to a raw pre-projection window instead would let excluded
+   *  (private) events displace public ones, turning public feed deltas
+   *  into a read-out of private-event volume. */
+  async listFleetEvents(
+    opts: { limit?: number; filter?: (e: ActivityEvent) => boolean } = {},
+  ): Promise<{ events: ActivityEvent[] }> {
     const limit = Math.min(opts.limit ?? FLEET_FEED_DEFAULT, FLEET_FEED_MAX);
     const items = await this.scanAll(
       "begins_with(SK, :act)", { ":act": "ACT#" },
     );
     // SK is ACT#<iso-ts>#<ulid>: lexicographic order is time order.
     items.sort((a, b) => ((a.SK as string) < (b.SK as string) ? 1 : -1));
-    return { events: items.slice(0, limit).map(toEvent) };
+    const events = items.map(toEvent);
+    return { events: (opts.filter ? events.filter(opts.filter) : events).slice(0, limit) };
   }
 
   /** Roster for the fleet dashboard: identity id, capabilities, recorded

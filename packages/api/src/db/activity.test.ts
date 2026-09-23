@@ -146,6 +146,25 @@ describe("ActivityRepo fleet reads", () => {
     expect(scan.FilterExpression).toContain("begins_with(SK");
   });
 
+  it("listFleetEvents applies a caller filter over the WHOLE log before the limit — non-matching rows cannot displace matches", async () => {
+    // The scan reads the full log, so a filtered read must collect matching
+    // events until the limit or exhaustion. If the limit were applied to the
+    // RAW window instead, the two newer non-matching rows would displace the
+    // matching ones — the private-volume oracle the public tier must not have.
+    ddb.on(ScanCommand).resolves({
+      Items: [
+        { PK: "AGENT#1", SK: "ACT#2026-09-23T09:00:00.000Z#01A", agentId: "1", ts: "2026-09-23T09:00:00.000Z", class: "attested", type: "forge_commit", summary: "match-old" },
+        { PK: "AGENT#1", SK: "ACT#2026-09-23T09:30:00.000Z#01B", agentId: "1", ts: "2026-09-23T09:30:00.000Z", class: "attested", type: "forge_pr", summary: "match-mid" },
+        { PK: "AGENT#2", SK: "ACT#2026-09-23T10:00:00.000Z#01C", agentId: "2", ts: "2026-09-23T10:00:00.000Z", class: "claimed", type: "status", summary: "noise-newer" },
+        { PK: "AGENT#2", SK: "ACT#2026-09-23T11:00:00.000Z#01D", agentId: "2", ts: "2026-09-23T11:00:00.000Z", class: "claimed", type: "status", summary: "noise-newest" },
+      ],
+    });
+    const { events } = await repo.listFleetEvents({
+      limit: 2, filter: (e) => e.type.startsWith("forge_"),
+    });
+    expect(events.map((e) => e.summary)).toEqual(["match-mid", "match-old"]);
+  });
+
   it("fleetRoster aggregates records, status freshness, and per-class counts without addresses", async () => {
     const now = Date.parse("2026-09-23T12:00:00.000Z");
     ddb.on(ScanCommand).resolves({
