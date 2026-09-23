@@ -1,4 +1,4 @@
-import { savePoolProfile } from "@agent-identity/client";
+import { poolStatus, savePoolProfile } from "@agent-identity/client";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -118,6 +118,93 @@ describe("ClaimManager auto-capabilities", () => {
     expect(mgr.status().held?.name).toBe("222222");
     expect(calls).toEqual([]);
     mgr.release();
+  });
+});
+
+// Models a server whose AUTO_CAPABILITIES policy is OFF: register() succeeds
+// (fleet key accepted) but never grants anything. Fresh keypairs get stable
+// sequential ids, mirroring real registration.
+function policyOffFactory(registered: string[]) {
+  let fresh = 0;
+  const ids = new Map<string, string>();
+  return vi.fn((keypair: { publicKeySpkiBase64: string }) => {
+    const key = keypair.publicKeySpkiBase64;
+    if (!ids.has(key)) ids.set(key, String(700000 + fresh++));
+    const id = ids.get(key)!;
+    return {
+      register: vi.fn(async () => {
+        registered.push(id);
+        return { agentId: id, address: `${id}@d`, capabilities: [] };
+      }),
+    };
+  });
+}
+
+// Every server-side registration is permanent (agent record, mailbox address
+// from the finite agentId space, roster entry), so a require the policy
+// refuses must not mint one identity per retry or per session restart.
+describe("ClaimManager probe suppression (mint-runaway regression)", () => {
+  it("repeated ensureIdentity(require) with the policy OFF registers at most one probe identity", async () => {
+    const dir = base();
+    const registered: string[] = [];
+    const mgr = new ClaimManager({
+      base: dir, fleetKey: "fk", makeClient: policyOffFactory(registered) as never,
+    });
+    // An agent (or its harness) retrying the documented remediation path.
+    for (let i = 0; i < 5; i++) {
+      await expect(mgr.ensureIdentity(["github"])).rejects.toThrow(/no free identity/);
+    }
+    // One refused-grant probe is the stated trade-off (avoids orphaning a
+    // registered keypair); retries must reuse its recorded refusal.
+    expect(registered).toHaveLength(1);
+    expect(poolStatus({ base: dir }).total).toBe(1);
+  });
+
+  it("MCP restarts with AGENT_IDENTITY_REQUIRE set share the one parked probe across managers", async () => {
+    const dir = base();
+    const registered: string[] = [];
+    // ONE factory across restarts: the real server allocates a fresh agentId
+    // for every fresh keypair, regardless of client process lifetime.
+    const factory = policyOffFactory(registered);
+    for (let restart = 0; restart < 3; restart++) {
+      const mgr = new ClaimManager({
+        base: dir, fleetKey: "fk", require: ["github"], makeClient: factory as never,
+      });
+      await mgr.init(); // swallows the NoIdentityError into initError
+      expect(mgr.status().held).toBeNull();
+      mgr.release();
+    }
+    expect(registered).toHaveLength(1);
+    expect(poolStatus({ base: dir }).total).toBe(1);
+  });
+
+  it("the suppressed error names the parked probe and keeps both remediations", async () => {
+    const dir = base();
+    const mgr = new ClaimManager({
+      base: dir, fleetKey: "fk", makeClient: policyOffFactory([]) as never,
+    });
+    await expect(mgr.ensureIdentity(["github"])).rejects.toThrow(/auto-capabilities/);
+    await expect(mgr.ensureIdentity(["github"])).rejects.toThrow(
+      /no free identity with capabilities \[github\][\s\S]*700000[\s\S]*AUTO_CAPABILITIES/,
+    );
+  });
+
+  it("a parked probe consumed by a plain session no longer suppresses a fresh probe", async () => {
+    const dir = base();
+    const registered: string[] = [];
+    const factory = policyOffFactory(registered);
+    const mgr = new ClaimManager({ base: dir, fleetKey: "fk", makeClient: factory as never });
+    await expect(mgr.ensureIdentity(["github"])).rejects.toThrow(/no free identity/);
+    // A plain session claims the parked refused-grant identity (it is a
+    // valid plain one)...
+    const plain = new ClaimManager({ base: dir, fleetKey: "fk", makeClient: factory as never });
+    await plain.init();
+    expect(plain.status().held?.name).toBe("700000");
+    // ...so the probe path may register again: pool growth stays bounded by
+    // real identity consumption, exactly like plain auto-provision.
+    await expect(mgr.ensureIdentity(["github"])).rejects.toThrow(/no free identity/);
+    expect(registered).toHaveLength(2);
+    plain.release();
   });
 });
 

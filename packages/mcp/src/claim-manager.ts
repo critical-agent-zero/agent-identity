@@ -1,6 +1,7 @@
 import {
-  AgentIdentityClient, claimFromPool, hasCapabilities, poolStatus,
-  savePoolProfile, type Claim, type MeResponse, type PoolProfile, type PoolStatus,
+  AgentIdentityClient, claimFromPool, claimSpecific, hasCapabilities, listPool,
+  poolStatus, savePoolProfile,
+  type Claim, type MeResponse, type PoolProfile, type PoolStatus,
 } from "@agent-identity/client";
 import {
   generateKeypair, type ActivityEvent, type AgentIdentity, type AgentStatusState,
@@ -85,16 +86,41 @@ export class ClaimManager {
     // a require set, ask the deployment's AUTO_CAPABILITIES policy for birth
     // grants; whether anything is granted is decided server-side by the
     // operator's policy, never by this client.
+    //
+    // Every registration is a PERMANENT server-side identity (agent record,
+    // mailbox address from the finite agentId space, roster entry), so a
+    // require the policy refuses must not mint one per retry or restart: a
+    // free pool profile already carrying a refusal for any of these
+    // capabilities is proof the probe was made and refused — fail on that
+    // evidence instead of registering another.
+    if (require.length > 0) {
+      const parked = await this.freeRefusedProbe(require, exclude);
+      if (parked) {
+        throw new NoIdentityError(
+          `${starvation} A registration already probed the deployment policy for ` +
+          `[${require.join(",")}] and was refused (parked as pool profile ${parked}), ` +
+          `so another identity is not registered. If the operator has since enabled ` +
+          `AUTO_CAPABILITIES for these capabilities, claim or remove that parked ` +
+          `profile to allow a fresh registration.`,
+        );
+      }
+    }
     const keypair = generateKeypair();
     const client = this.makeClientFn(keypair);
     const identity = await client.register(
       require.length > 0 ? { requestedCapabilities: require } : {});
+    const granted = identity.capabilities ?? [];
+    const refused = require.filter((cap) => !granted.includes(cap));
     // Save before checking the grant: even a refused-grant identity is a
     // valid plain one — keeping it avoids orphaning a registered keypair.
-    const profile: PoolProfile & { agentId: string } = { ...keypair, ...identity };
+    // A refusal is recorded on the profile (grants are birth-only, so it is
+    // permanent for this identity) to suppress repeat probe registrations.
+    const profile: PoolProfile & { agentId: string } = {
+      ...keypair, ...identity,
+      ...(refused.length > 0 ? { refusedCapabilities: refused } : {}),
+    };
     savePoolProfile(profile, this.opts.base);
-    const granted = identity.capabilities ?? [];
-    if (require.length > 0 && !require.every((cap) => granted.includes(cap))) {
+    if (refused.length > 0) {
       // Policy off (or not covering the require): the starvation remediation
       // stands, with the deployment-policy option added for the operator.
       throw new NoIdentityError(
@@ -106,6 +132,27 @@ export class ClaimManager {
     const created = await claimFromPool({ base: this.opts.base, require, exclude });
     if (!created) throw new NoIdentityError("could not claim freshly created identity");
     this.setHeld(created);
+  }
+
+  // A FREE pool profile whose recorded policy refusal overlaps the require:
+  // standing proof that minting again would be refused too. Only free
+  // profiles count — a parked probe consumed by a plain session (it is a
+  // valid plain identity) stops suppressing, so pool growth is bounded by
+  // real identity consumption, exactly like plain auto-provision.
+  private async freeRefusedProbe(
+    require: string[], exclude: string[],
+  ): Promise<string | undefined> {
+    for (const { name, profile } of listPool(this.opts.base)) {
+      if (exclude.includes(name)) continue;
+      const refused = profile.refusedCapabilities ?? [];
+      if (!require.some((cap) => refused.includes(cap))) continue;
+      const probe = await claimSpecific(name, { base: this.opts.base });
+      if (probe) {
+        probe.release(); // freeness check only — never held
+        return name;
+      }
+    }
+    return undefined;
   }
 
   private setHeld(claim: Claim): void {

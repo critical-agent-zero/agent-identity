@@ -18,6 +18,13 @@ export interface PoolProfile extends Keypair {
   // Server-granted capabilities recorded from the register response (e.g.
   // birth grants under the deployment's auto-capabilities policy).
   capabilities?: string[];
+  // Capabilities a fleet-key registration requested but the deployment's
+  // AUTO_CAPABILITIES policy refused at birth. Grants are birth-only
+  // server-side, so this identity can never gain them by re-registering.
+  // Recorded so retry loops and session restarts reuse this one parked
+  // probe as evidence of the refusal instead of registering a fresh
+  // (permanent) server identity per attempt — see ClaimManager.
+  refusedCapabilities?: string[];
 }
 
 export const poolDir = (base: string = defaultProfileDir()): string => join(base, "pool");
