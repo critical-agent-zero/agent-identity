@@ -1,6 +1,6 @@
 import {
   fingerprint, projectPublicEvent, publicView, redactAddress, sanitizeActivityText,
-  STATUS_LABEL_MAX, STATUS_STATES, TASK_NOTE_MAX,
+  sanitizeMailText, STATUS_LABEL_MAX, STATUS_STATES, TASK_NOTE_MAX,
   type ActivityEvent, type AgentStatusState,
 } from "@agent-identity/shared";
 import { Hono } from "hono";
@@ -21,6 +21,12 @@ export interface Deps {
    *  (parseRepoAllowlist of PUBLIC_REPOS). Empty — the default — means the
    *  public tier shows no forge events at all: fail closed. */
   publicRepos: string[];
+  /** The fleet's mail domain (MAIL_DOMAIN). The viewer tier knows every
+   *  agentId from the roster, so this domain alone reconstructs every
+   *  mailbox address — fleet mail responses therefore redact ANY address at
+   *  it (another agent's From-line, an echoed mailbox in a body) and every
+   *  bare mention of it, not just the path agent's own address. */
+  mailDomain: string;
 }
 
 const isFleetPath = (pathname: string): boolean =>
@@ -305,10 +311,20 @@ export function createApp(deps: Deps, now: () => number = Date.now): Hono {
   // live under /fleet/, so the middleware already gates them; /fleet/public
   // mounts no mail route, so no unauthenticated mail surface exists). The
   // invariant of this surface: the agent's mailbox ADDRESS never travels.
-  // Every serialized field passes through redactAddress with the agentId
-  // from the path; a stored address field is consumed for its domain and
-  // dropped, never emitted. This IS the operator's forensic view, so
-  // unsolicited and auth-failed mail are included, flags visible.
+  // Every serialized field is re-sanitized (records stored before the
+  // strip set covered soft hyphen/zero-width characters would otherwise
+  // carry an invisibly-interposed address the redaction regex cannot see)
+  // and then passes through redactAddress with the agentId from the path
+  // AND the fleet mail domain; a stored address field is consumed for its
+  // domain and dropped, never emitted. This IS the operator's forensic
+  // view, so unsolicited and auth-failed mail are included, flags visible.
+  const redactMailField = (agentId: string, storedDomain?: string) => (s: string) => {
+    let out = redactAddress(sanitizeMailText(s), agentId, deps.mailDomain);
+    if (storedDomain && storedDomain.toLowerCase() !== deps.mailDomain.toLowerCase())
+      out = redactAddress(out, agentId, storedDomain);
+    return out;
+  };
+
   app.get("/fleet/emails/:agentId", async (c) => {
     const agentId = c.req.param("agentId");
     const limitRaw = c.req.query("limit");
@@ -319,7 +335,7 @@ export function createApp(deps: Deps, now: () => number = Date.now): Hono {
         includeUnsolicited: true,
         includeUnauthenticated: true,
       });
-      const r = (s: string) => redactAddress(s, agentId);
+      const r = redactMailField(agentId);
       // Explicit field allowlist — the mailbox address field can never ride
       // along, and from/subject are redacted against recipient echoes.
       return c.json({
@@ -342,13 +358,13 @@ export function createApp(deps: Deps, now: () => number = Date.now): Hono {
     // Unknown agent and unknown email are indistinguishable by construction:
     // both are the same storage miss, answered with one body.
     if (!email) return c.json({ error: "not found" }, 404);
-    // A stored address field (if the storage shape ever carries one) resolves
-    // the redaction domain and is dropped — never emitted.
+    // A stored address field (if the storage shape ever carries one) adds a
+    // second redaction domain and is dropped — never emitted.
     const { bodyS3Key, address, ...rest } =
       email as typeof email & { address?: string };
-    const domain = typeof address === "string" ? address.split("@")[1] : undefined;
+    const storedDomain = typeof address === "string" ? address.split("@")[1] : undefined;
     const full = bodyS3Key ? { ...rest, ...(await deps.readBody(bodyS3Key)) } : rest;
-    const r = (s: string) => redactAddress(s, agentId, domain);
+    const r = redactMailField(agentId, storedDomain);
     return c.json({
       id: full.id, from: r(full.from), subject: r(full.subject),
       receivedAt: full.receivedAt,

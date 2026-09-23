@@ -27,6 +27,9 @@ const app = createApp({
     return JSON.parse(await res.Body!.transformToString());
   },
   fleetKeyRequired: process.env.FLEET_KEY_REQUIRED !== "false",
+  // The fleet mail routes redact ANY address at this domain: the viewer
+  // knows every agentId, so the domain alone reconstructs every mailbox.
+  mailDomain: domain,
   // Unset or empty PUBLIC_REPOS parses to the empty allowlist: the public
   // fleet tier then shows no forge events at all — fail closed.
   publicRepos: parseRepoAllowlist(process.env.PUBLIC_REPOS ?? ""),

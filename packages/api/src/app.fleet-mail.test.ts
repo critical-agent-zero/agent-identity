@@ -85,6 +85,7 @@ function makeDeps(overrides: Record<string, unknown> = {}): Deps {
     readBody: vi.fn(async () => ({ text: "", links: [] })),
     fleetKeyRequired: true,
     publicRepos: [],
+    mailDomain: "agents.example.com",
   };
 }
 
