@@ -11,6 +11,18 @@ const synth = (props: Partial<AgentIdentityStackProps> = {}, context: Record<str
   return Template.fromStack(stack);
 };
 
+describe("cors", () => {
+  it("allows browser dashboards to call the API (GET + the read-key headers)", () => {
+    synth().hasResourceProperties("AWS::ApiGatewayV2::Api", {
+      CorsConfiguration: {
+        AllowOrigins: ["*"],
+        AllowMethods: ["GET"],
+        AllowHeaders: ["content-type", "x-viewer-key"],
+      },
+    });
+  });
+});
+
 describe("api throttling", () => {
   it("throttles the default stage by default", () => {
     synth().hasResourceProperties("AWS::ApiGatewayV2::Stage", {
