@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agent-identity · fleet</title>
 <style>
-/* Single-theme by design: the roster is a terminal-adjacent operations surface.
-   All colors painted explicitly so it holds on any host ground. */
+/* Single-theme by design: a light operations surface. All colors painted
+   explicitly so the page holds on any host ground. */
 :root{
-  --bg:#101418; --panel:#161C21; --panel2:#1C242A; --line:#263039;
-  --text:#DEE7E2; --dim:#8FA098; --faint:#5C6B64;
-  --green:#4CC98A; --amber:#D9A93F; --red:#D96A5A; --grey:#6B7A73;
-  --attest:#4CC98A; --claim:#8FA3D9; --mono:"JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;
+  --bg:#F7F8F6; --panel:#FFFFFF; --panel2:#F0F4EF; --line:#DDE3DC;
+  --text:#232A26; --dim:#5D6A63; --faint:#8A958E;
+  --green:#1E8A55; --amber:#A87A1C; --red:#BA5140; --grey:#9AA69F;
+  --attest:#1E8A55; --claim:#4A62B8; --mono:"JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 var(--mono)}
@@ -26,9 +26,10 @@ main{display:grid;grid-template-columns:minmax(300px,380px) 1fr;gap:0;min-height
 .sect{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin:4px 0 12px}
 .agent{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:10px;cursor:pointer}
 .agent:hover,.agent.sel{border-color:var(--green);background:var(--panel2)}
+.agent{box-shadow:0 1px 2px rgba(35,42,38,.05)}
 .agent .row1{display:flex;align-items:center;gap:10px}
 .dot{width:9px;height:9px;border-radius:50%;flex:none}
-.dot.working{background:var(--green);box-shadow:0 0 6px var(--green)}
+.dot.working{background:var(--green);box-shadow:0 0 0 3px rgba(30,138,85,.18)}
 .dot.idle{background:var(--grey)}
 .dot.blocked{background:var(--amber)}
 .dot.stale,.dot.none{background:transparent;border:1.5px solid var(--faint)}
@@ -54,7 +55,7 @@ main{display:grid;grid-template-columns:minmax(300px,380px) 1fr;gap:0;min-height
 #gate p{color:var(--dim);font-size:13px}
 #gate input{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:6px;color:var(--text);font:13px var(--mono);padding:10px 12px;margin:6px 0}
 #gate input:focus{outline:none;border-color:var(--green)}
-#gate button{background:var(--green);color:#0E1512;border:0;border-radius:6px;font:600 13px var(--mono);padding:10px 18px;margin-top:10px;cursor:pointer}
+#gate button{background:var(--green);color:#FFFFFF;border:0;border-radius:6px;font:600 13px var(--mono);padding:10px 18px;margin-top:10px;cursor:pointer}
 #gate button.alt{background:transparent;color:var(--dim);border:1px solid var(--line);margin-left:8px}
 #gate button.alt:hover{border-color:var(--green);color:var(--text)}
 #gate .hint{color:var(--faint);font-size:12px;margin-top:10px}

@@ -30,7 +30,7 @@ const isFleetPath = (pathname: string): boolean =>
 // attacker-shaped strings out of the data layer.
 const CAPABILITY_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
-export function createApp(deps: Deps): Hono {
+export function createApp(deps: Deps, now: () => number = Date.now): Hono {
   const app = new Hono();
 
   // Mounted BEFORE signatureAuth: admin routes are gated only by the admin
@@ -92,32 +92,52 @@ export function createApp(deps: Deps): Hono {
 
   const publicFleet = new Hono();
 
+  // Identical for every caller, so repeat reads within a short TTL are
+  // served from memory: the whole-log scan happens at most once per 10s per
+  // warm container, which converts a launch-spike hammer at the throttle
+  // ceiling from O(requests) storage scans into O(1). Never applied to
+  // keyed or signed routes.
+  const PUBLIC_CACHE_MS = 10_000;
+  const publicCache = new Map<string, { t: number; body: string }>();
+  const cached = async (key: string, build: () => Promise<unknown>): Promise<Response> => {
+    const hit = publicCache.get(key);
+    if (hit && now() - hit.t < PUBLIC_CACHE_MS) {
+      return new Response(hit.body, { headers: { "content-type": "application/json" } });
+    }
+    const body = JSON.stringify(await build());
+    publicCache.set(key, { t: now(), body });
+    return new Response(body, { headers: { "content-type": "application/json" } });
+  };
+
   const isPublicEvent = (e: ActivityEvent): boolean =>
     projectPublicEvent(e, deps.publicRepos) !== undefined;
 
-  publicFleet.get("/agents", async (c) => {
-    const [roster, feed] = await Promise.all([
-      deps.activity.fleetRoster(),
-      deps.activity.listFleetEvents({ limit: PUBLIC_COUNT_WINDOW, filter: isPublicEvent }),
-    ]);
-    // Roster counts are recomputed over PUBLIC events only — the stored
-    // per-class totals would otherwise leak private-work tempo.
-    const { agents } = publicView(feed.events, roster, deps.publicRepos);
-    return c.json({ publicView: true, agents });
-  });
+  publicFleet.get("/agents", (c) =>
+    cached("agents", async () => {
+      const [roster, feed] = await Promise.all([
+        deps.activity.fleetRoster(),
+        deps.activity.listFleetEvents({ limit: PUBLIC_COUNT_WINDOW, filter: isPublicEvent }),
+      ]);
+      // Roster counts are recomputed over PUBLIC events only — the stored
+      // per-class totals would otherwise leak private-work tempo.
+      const { agents } = publicView(feed.events, roster, deps.publicRepos);
+      return { publicView: true, agents };
+    }));
 
   publicFleet.get("/activity", async (c) => {
     const n = Number(c.req.query("limit"));
     const limit = Number.isFinite(n)
       ? Math.min(Math.max(Math.trunc(n), 1), PUBLIC_FEED_MAX)
       : PUBLIC_FEED_DEFAULT;
-    const feed = await deps.activity.listFleetEvents({ limit, filter: isPublicEvent });
-    // publicView re-projects what the filter admitted: the projection stays
-    // the single authority on what is public, and a storage fake that
-    // ignores `filter` still cannot leak. The slice is the same
-    // belt-and-suspenders bound against an over-returning repo.
-    const { events } = publicView(feed.events, [], deps.publicRepos);
-    return c.json({ publicView: true, events: events.slice(0, limit) });
+    return cached(`activity:${limit}`, async () => {
+      const feed = await deps.activity.listFleetEvents({ limit, filter: isPublicEvent });
+      // publicView re-projects what the filter admitted: the projection stays
+      // the single authority on what is public, and a storage fake that
+      // ignores `filter` still cannot leak. The slice is the same
+      // belt-and-suspenders bound against an over-returning repo.
+      const { events } = publicView(feed.events, [], deps.publicRepos);
+      return { publicView: true, events: events.slice(0, limit) };
+    });
   });
 
   app.route("/fleet/public", publicFleet);

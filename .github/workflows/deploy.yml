@@ -87,6 +87,7 @@ jobs:
           # public log (ApiUrl, MxRecord, TableName). pipefail preserves cdk's exit code.
           pnpm exec cdk deploy --require-approval never --no-color \
             -c githubForkOwner=${{ vars.FORGE_GITHUB_FORK_OWNER }} \
+            -c publicRepos=${{ vars.PUBLIC_REPOS }} \
             --outputs-file outputs.json 2>&1 \
             | sed '/^Outputs:$/,/^Stack ARN:$/{/^Stack ARN:$/!d;}'
       - name: Activate SES receipt rule set

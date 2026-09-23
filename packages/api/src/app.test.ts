@@ -492,3 +492,27 @@ describe("fleet routes auth matrix", () => {
     });
   });
 });
+
+describe("public tier response cache", () => {
+  it("serves repeat public reads within the TTL from memory (one storage read)", async () => {
+    const deps = makeDeps();
+    let now = 1_000_000;
+    const app = createApp(deps, () => now);
+    await app.request("/fleet/public/activity");
+    now += 5_000;
+    await app.request("/fleet/public/activity");
+    expect((deps.activity.listFleetEvents as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+    now += 6_000;
+    await app.request("/fleet/public/activity");
+    expect((deps.activity.listFleetEvents as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(2);
+  });
+
+  it("keyed and agent routes are never cached", async () => {
+    const deps = makeDeps();
+    let now = 2_000_000;
+    const app = createApp(deps, () => now);
+    await app.request("/fleet/agents", { headers: { "x-viewer-key": "vk" } });
+    await app.request("/fleet/agents", { headers: { "x-viewer-key": "vk" } });
+    expect((deps.activity.fleetRoster as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(2);
+  });
+});
