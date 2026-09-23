@@ -2,7 +2,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { Command } from "commander";
-import { createFleetKey, listAgents, revokeAgent, tagAgent, untagAgent } from "./commands.js";
+import { createFleetKey, createViewerKey, listAgents, revokeAgent, tagAgent, untagAgent } from "./commands.js";
 
 const table = process.env.AGENT_IDENTITY_TABLE;
 if (!table) {
@@ -19,6 +19,15 @@ program.command("fleet-key")
   .action(async (opts: { label: string }) => {
     const key = await createFleetKey(ddb, table, opts.label);
     console.log("Fleet key (shown once, store it now):");
+    console.log(key);
+  });
+
+program.command("viewer-key")
+  .command("create")
+  .option("--label <label>", "label for this key", "default")
+  .action(async (opts: { label: string }) => {
+    const key = await createViewerKey(ddb, table, opts.label);
+    console.log("Viewer key (read-only fleet dashboard access; shown once, store it now):");
     console.log(key);
   });
 

@@ -2,7 +2,7 @@ import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, UpdateComm
 import { mockClient } from "aws-sdk-client-mock";
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { createFleetKey, listAgents, revokeAgent, tagAgent, untagAgent } from "./commands.js";
+import { createFleetKey, createViewerKey, listAgents, revokeAgent, tagAgent, untagAgent } from "./commands.js";
 
 const ddb = mockClient(DynamoDBDocumentClient);
 beforeEach(() => ddb.reset());
@@ -16,6 +16,17 @@ describe("mailctl commands", () => {
     expect(item.PK).toBe(`FLEET#${createHash("sha256").update(key).digest("hex")}`);
     expect(JSON.stringify(item)).not.toContain(key);
     expect(item.label).toBe("ci");
+  });
+
+  it("createViewerKey stores only the sha256 hash under the VIEWER partition", async () => {
+    ddb.on(PutCommand).resolves({});
+    const key = await createViewerKey(ddb as never, "tbl", "dashboard");
+    expect(key).toMatch(/^[0-9a-f]{64}$/);
+    const item = ddb.commandCalls(PutCommand)[0].args[0].input.Item!;
+    expect(item.PK).toBe(`VIEWER#${createHash("sha256").update(key).digest("hex")}`);
+    expect(item.SK).toBe("VIEWER");
+    expect(JSON.stringify(item)).not.toContain(key);
+    expect(item.label).toBe("dashboard");
   });
 
   it("listAgents scans AGENT records", async () => {

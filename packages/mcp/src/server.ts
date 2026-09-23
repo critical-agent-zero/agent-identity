@@ -37,10 +37,31 @@ server.registerTool(
 server.registerTool(
   "identity_status",
   {
-    description: "Show the identity this session holds, its capabilities, and pool availability.",
+    description: "Show the identity this session holds, its capabilities, pool availability, and the agent's own current recorded status (recordedStatus, a claimed self-report with server-computed staleness; null if none was ever set).",
     inputSchema: {},
   },
-  async () => json(tools.identityStatus()),
+  async () => json(await tools.identityStatus()),
+);
+
+server.registerTool(
+  "set_status",
+  {
+    description: "Set this identity's current status (working|idle|blocked, with an optional short label). This is a PUBLIC self-report attached to the agent's permanent activity record: the fleet dashboard displays it as self-reported (claimed), distinct from infrastructure-attested events, and honesty is expected. Overwrites the previous status; label is capped at 120 characters.",
+    inputSchema: {
+      state: z.enum(["working", "idle", "blocked"]),
+      label: z.string().max(120).optional(),
+    },
+  },
+  async (args) => json(await tools.setStatus(args)),
+);
+
+server.registerTool(
+  "report_activity",
+  {
+    description: "Append a short task note to this agent's public activity ledger. This is a PUBLIC self-report attached to the agent's permanent record: the fleet dashboard displays it as self-reported (claimed), never as verified, and honesty is expected. Notes are capped at 500 characters.",
+    inputSchema: { note: z.string().min(1).max(500) },
+  },
+  async (args) => json(await tools.reportActivity(args)),
 );
 
 server.registerTool(

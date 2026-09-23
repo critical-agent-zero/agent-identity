@@ -1,7 +1,7 @@
 import type { AgentRecord, NoncesRepo } from "@agent-identity/api";
 import {
   canonicalString, generateKeypair, sign,
-  type CommitSpec, type PrSpec, type RepoRef,
+  type ActivityEvent, type CommitSpec, type PrSpec, type RepoRef,
 } from "@agent-identity/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createProxyApp, type ProxyDeps } from "./app.js";
@@ -304,6 +304,124 @@ describe("POST /forge/:service/fork", () => {
     const body = JSON.stringify({ owner: "o" });
     const res = await app.request(path, { ...signed("POST", path, body), body });
     expect(res.status).toBe(400);
+  });
+});
+
+class FakeLedger {
+  events: ActivityEvent[] = [];
+  failWith?: Error;
+  putEvent = async (event: ActivityEvent): Promise<string> => {
+    if (this.failWith) throw this.failWith;
+    this.events.push(event);
+    return "id";
+  };
+}
+
+describe("attested activity ledger", () => {
+  const commitPath = "/forge/github/commit";
+  const commitBody = JSON.stringify({
+    owner: "o", repo: "r", branch: "b", message: "m",
+    files: [{ path: "f", content: "x" }],
+  });
+
+  function ledgered(over: Parameters<typeof makeDeps>[0] = {}) {
+    const ledger = new FakeLedger();
+    const made = makeDeps({ activity: ledger, ...over });
+    return { ...made, ledger };
+  }
+
+  it("writes an attested forge_commit event on success", async () => {
+    const { deps, ledger } = ledgered();
+    const app = createProxyApp(deps);
+    const res = await app.request(commitPath, { ...signed("POST", commitPath, commitBody), body: commitBody });
+    expect(res.status).toBe(200);
+    expect(ledger.events).toHaveLength(1);
+    expect(ledger.events[0]).toEqual(expect.objectContaining({
+      agentId: "482913", class: "attested", type: "forge_commit",
+      detail: expect.objectContaining({ repo: "o/r", branch: "b", sha: "c1" }),
+      ref: "https://forge/c1",
+    }));
+    expect(typeof ledger.events[0].ts).toBe("string");
+  });
+
+  it("writes forge_pr, forge_comment, and forge_fork events on success", async () => {
+    const { deps, ledger } = ledgered();
+    const app = createProxyApp(deps);
+
+    const prPath = "/forge/github/pr";
+    const prBody = JSON.stringify({ owner: "o", repo: "r", head: "h", base: "main", title: "t", body: "b" });
+    await app.request(prPath, { ...signed("POST", prPath, prBody), body: prBody });
+
+    const cPath = "/forge/github/comment";
+    const cBody = JSON.stringify({ owner: "o", repo: "r", issue: 12, body: "note" });
+    await app.request(cPath, { ...signed("POST", cPath, cBody), body: cBody });
+
+    const fPath = "/forge/github/fork";
+    const fBody = JSON.stringify({ owner: "o", repo: "r" });
+    await app.request(fPath, { ...signed("POST", fPath, fBody), body: fBody });
+
+    expect(ledger.events.map((e) => e.type)).toEqual(["forge_pr", "forge_comment", "forge_fork"]);
+    expect(ledger.events[0].detail).toEqual(expect.objectContaining({ repo: "o/r", number: 7 }));
+    expect(ledger.events[0].ref).toBe("https://forge/pr/7");
+    expect(ledger.events[1].detail).toEqual(expect.objectContaining({ repo: "o/r", issue: 12 }));
+    expect(ledger.events[2].detail).toEqual(expect.objectContaining({
+      source: "o/r", fork: "fork-acct/r",
+    }));
+  });
+
+  it("maps provision to capability_granted and never records username or address", async () => {
+    const provision = vi.fn(async () => ({ username: "agent-482913", email: "482913@agents.example" }));
+    const { deps, ledger } = ledgered({
+      agentOverride: { capabilities: ["github", "gitlab"] },
+      forges: { github: new FakeForge(), gitlab: new FakeForge() },
+      provisioners: { gitlab: { provision } },
+    });
+    const app = createProxyApp(deps);
+    const path = "/forge/gitlab/provision";
+    const res = await app.request(path, signed("POST", path));
+    expect(res.status).toBe(200);
+    expect(ledger.events[0]).toEqual(expect.objectContaining({
+      class: "attested", type: "capability_granted",
+      detail: { service: "gitlab" },
+    }));
+    const json = JSON.stringify(ledger.events);
+    expect(json).not.toContain("agent-482913");
+    expect(json).not.toContain("482913@agents.example");
+  });
+
+  it("writes no event on a failed forge operation", async () => {
+    const { deps, forge, ledger } = ledgered();
+    forge.failWith = new ForgeError("non_fast_forward", "stale", 422);
+    const app = createProxyApp(deps);
+    await app.request(commitPath, { ...signed("POST", commitPath, commitBody), body: commitBody });
+    expect(ledger.events).toHaveLength(0);
+  });
+
+  it("writes no event on a policy denial", async () => {
+    const { deps, ledger } = ledgered({ policy: () => ({ allow: false, reason: "no" }) });
+    const app = createProxyApp(deps);
+    await app.request(commitPath, { ...signed("POST", commitPath, commitBody), body: commitBody });
+    expect(ledger.events).toHaveLength(0);
+  });
+
+  it("never records read-only repo lookups", async () => {
+    const { deps, ledger } = ledgered();
+    const app = createProxyApp(deps);
+    const path = "/forge/github/repo/o/r";
+    await app.request(path, signed("GET", path));
+    expect(ledger.events).toHaveLength(0);
+  });
+
+  it("swallows a ledger write failure: the forge op still succeeds, audited", async () => {
+    const { deps, ledger, audit } = ledgered();
+    ledger.failWith = new Error("ddb down");
+    const app = createProxyApp(deps);
+    const res = await app.request(commitPath, { ...signed("POST", commitPath, commitBody), body: commitBody });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ sha: "c1", url: "https://forge/c1" });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: "ledger_write_failed",
+    }));
   });
 });
 

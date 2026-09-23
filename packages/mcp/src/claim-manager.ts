@@ -1,9 +1,10 @@
 import {
   AgentIdentityClient, claimFromPool, hasCapabilities, poolStatus,
-  savePoolProfile, type Claim, type PoolProfile, type PoolStatus,
+  savePoolProfile, type Claim, type MeResponse, type PoolProfile, type PoolStatus,
 } from "@agent-identity/client";
 import {
-  generateKeypair, type AgentIdentity, type CommentResult, type CommitResult,
+  generateKeypair, type ActivityEvent, type AgentIdentity, type AgentStatusState,
+  type CommentResult, type CommitResult,
   type CommitSpec, type EmailFull, type EmailSummary, type ForgeProvisionResult,
   type ForkResult, type Keypair, type PrResult, type PrSpec, type RepoInfo, type RepoRef,
 } from "@agent-identity/shared";
@@ -12,6 +13,9 @@ export class NoIdentityError extends Error {}
 
 export interface AgentClientLike {
   register(): Promise<AgentIdentity>;
+  me(): Promise<MeResponse>;
+  setStatus(state: AgentStatusState, label?: string): Promise<{ event: ActivityEvent }>;
+  reportTaskNote(note: string): Promise<{ event: ActivityEvent }>;
   listEmails(opts: { since?: string; limit?: number; includeUnauthenticated?: boolean }):
     Promise<{ emails: EmailSummary[] }>;
   getEmail(id: string): Promise<EmailFull>;

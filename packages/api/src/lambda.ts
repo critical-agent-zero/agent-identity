@@ -3,6 +3,7 @@ import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { handle } from "hono/aws-lambda";
 import { createApp } from "./app.js";
+import { ActivityRepo } from "./db/activity.js";
 import { AgentsRepo } from "./db/agents.js";
 import { EmailsRepo } from "./db/emails.js";
 import { NoncesRepo } from "./db/nonces.js";
@@ -18,6 +19,7 @@ const s3 = new S3Client({});
 const app = createApp({
   agents: new AgentsRepo(ddb, table, domain),
   emails: new EmailsRepo(ddb, table, retentionDays),
+  activity: new ActivityRepo(ddb, table, retentionDays),
   nonces: new NoncesRepo(ddb, table),
   readBody: async (key) => {
     const res = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));

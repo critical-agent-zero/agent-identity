@@ -56,6 +56,17 @@ describe("AgentsRepo lookups", () => {
     expect(await repo.verifyFleetKey("secret")).toBe(false);
   });
 
+  it("verifyViewerKey checks the VIEWER partition, never FLEET", async () => {
+    ddb.on(GetCommand).resolves({ Item: { PK: "VIEWER#abc" } });
+    expect(await repo.verifyViewerKey("secret")).toBe(true);
+    const get = ddb.commandCalls(GetCommand)[0].args[0].input;
+    expect((get.Key!.PK as string).startsWith("VIEWER#")).toBe(true);
+    expect(get.Key!.SK).toBe("VIEWER");
+    ddb.reset();
+    ddb.on(GetCommand).resolves({});
+    expect(await repo.verifyViewerKey("secret")).toBe(false);
+  });
+
   it("revoke sets status=revoked", async () => {
     ddb.on(UpdateCommand).resolves({});
     await repo.revoke("fp1");

@@ -15,6 +15,21 @@ export async function createFleetKey(
   return key;
 }
 
+/** Read-only dashboard credential: only ever checked on GET /fleet routes,
+ *  stored hashed like the fleet key but in its own VIEWER partition so the
+ *  two credential classes can never stand in for each other. */
+export async function createViewerKey(
+  ddb: DynamoDBDocumentClient, table: string, label: string,
+): Promise<string> {
+  const key = randomBytes(32).toString("hex");
+  const hash = createHash("sha256").update(key).digest("hex");
+  await ddb.send(new PutCommand({
+    TableName: table,
+    Item: { PK: `VIEWER#${hash}`, SK: "VIEWER", label, createdAt: new Date().toISOString() },
+  }));
+  return key;
+}
+
 export interface AgentRow {
   fingerprint: string;
   agentId: string;

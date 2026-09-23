@@ -79,6 +79,18 @@ export class AgentsRepo {
     return Item !== undefined;
   }
 
+  /** Viewer keys are a separate, read-only credential class: they live in
+   *  their own VIEWER partition (hashed at rest like the fleet key), so a
+   *  fleet key can never pass as a viewer key or vice versa. Only the GET
+   *  /fleet routes ever check this. */
+  async verifyViewerKey(viewerKey: string): Promise<boolean> {
+    const hash = createHash("sha256").update(viewerKey).digest("hex");
+    const { Item } = await this.ddb.send(new GetCommand({
+      TableName: this.table, Key: { PK: `VIEWER#${hash}`, SK: "VIEWER" },
+    }));
+    return Item !== undefined;
+  }
+
   async revoke(fp: string): Promise<void> {
     await this.ddb.send(new UpdateCommand({
       TableName: this.table,
