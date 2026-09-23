@@ -492,3 +492,23 @@ describe("fleet routes auth matrix", () => {
     });
   });
 });
+
+describe("CORS preflight (the $default route swallows OPTIONS before API GW CORS)", () => {
+  it("answers OPTIONS on fleet routes with 204 + CORS headers, no auth required", async () => {
+    const app = createApp(makeDeps());
+    const res = await app.request("/fleet/agents", { method: "OPTIONS", headers: { origin: "http://x" } });
+    expect(res.status).toBe(204);
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get("access-control-allow-headers")).toContain("x-viewer-key");
+    expect(res.headers.get("access-control-allow-methods")).toContain("GET");
+  });
+
+  it("OPTIONS never leaks data and real methods stay gated", async () => {
+    const app = createApp(makeDeps());
+    const pre = await app.request("/me", { method: "OPTIONS" });
+    expect(pre.status).toBe(204);
+    expect(await pre.text()).toBe("");
+    const real = await app.request("/me");
+    expect(real.status).toBe(401);
+  });
+});

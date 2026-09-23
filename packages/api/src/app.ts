@@ -33,6 +33,17 @@ const CAPABILITY_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 export function createApp(deps: Deps): Hono {
   const app = new Hono();
 
+  // The $default catch-all route forwards OPTIONS to this lambda before API
+  // Gateway's CORS handling can answer it, so preflights must be answered
+  // here — before any auth, with no body. Mirrors the stack's corsPreflight.
+  app.options("*", (c) =>
+    c.body(null, 204, {
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET",
+      "access-control-allow-headers": "content-type, x-viewer-key",
+      "access-control-max-age": "3600",
+    }));
+
   // Mounted BEFORE signatureAuth: admin routes are gated only by the admin
   // key, and signature-auth'd agents never reach them. Nothing here is
   // exposed through the MCP surface — the agent-facing client has no admin
