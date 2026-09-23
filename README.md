@@ -140,7 +140,7 @@ SES inbound email is only available in **us-east-1**, **us-west-2**, and **eu-we
 
 ### Fleet administration
 
-Admin operations — listing agents, tagging capabilities (`mailctl agent tag <id> github|gitlab`), revoking an identity, minting fleet keys — use the `mailctl` CLI with operator AWS credentials directly against DynamoDB. There is no admin HTTP API. Forge credentials (a GitLab group Owner token, a GitHub fork-namespace PAT) are held server-side in SSM, never by agents — see [docs/forge-access.md](docs/forge-access.md) for operator setup.
+Admin operations — listing agents, tagging capabilities (`mailctl agent tag <id> github|gitlab`), revoking an identity, minting fleet/admin/viewer keys — use the `mailctl` CLI with operator AWS credentials directly against DynamoDB. The one admin HTTP surface is the capability API (`POST`/`DELETE /admin/agents/:id/capabilities`), gated by the admin key (`mailctl admin-key create`) and used by `agent-identity github enable|disable`; keep that key out of agent session environments — it grants capability admin over every identity. Forge credentials (a GitLab group Owner token, a GitHub fork-namespace PAT) are held server-side in SSM, never by agents — see [docs/forge-access.md](docs/forge-access.md) for operator setup.
 
 ### CI/CD (GitHub Actions)
 
@@ -153,14 +153,15 @@ One-time setup (run in CloudShell, or any shell with admin credentials, in your 
    npx aws-cdk@2 bootstrap aws://$(aws sts get-caller-identity --query Account --output text)/$AWS_REGION
    ```
 
-2. Create the OIDC provider and deploy role (add `CreateOidcProvider=false` to the parameter overrides if the account already has a GitHub OIDC provider):
+2. Create the OIDC provider and deploy role, using the template from **your own checkout** and naming **the repository the deploy workflow runs in** (add `CreateOidcProvider=false` to the parameter overrides if the account already has a GitHub OIDC provider):
    ```bash
-   curl -sO https://raw.githubusercontent.com/critical-labs/agent-identity/main/infra/github-oidc.yml
-   aws cloudformation deploy --template-file github-oidc.yml \
-     --stack-name agent-identity-github-oidc --capabilities CAPABILITY_NAMED_IAM
+   aws cloudformation deploy --template-file infra/github-oidc.yml \
+     --stack-name agent-identity-github-oidc --capabilities CAPABILITY_NAMED_IAM \
+     --parameter-overrides GitHubOrg=<your-org> GitHubRepo=<your-repo>
    aws cloudformation describe-stacks --stack-name agent-identity-github-oidc \
      --query "Stacks[0].Outputs[?OutputKey=='DeployRoleArn'].OutputValue" --output text
    ```
+   The `--parameter-overrides` are not optional for self-hosters: the template's defaults name the upstream repo (`critical-labs/agent-identity`), so deploying without them creates a role that trusts **upstream's** repository — upstream maintainers could then deploy into your AWS account (the role delegates to the account's `cdk-*` roles, which is admin-equivalent). The role's trust `sub` claim must name **your** repository.
 
 3. In repo **Settings → Environments**, create an environment named `production` (optionally require reviewers to gate deploys).
 
@@ -171,7 +172,7 @@ One-time setup (run in CloudShell, or any shell with admin credentials, in your 
 
 5. Run the **deploy** workflow from the Actions tab. The job summary lists the remaining manual steps (DNS MX record, SES domain verification, fleet key); stack outputs are not published on this public repo — read them with `aws cloudformation describe-stacks --stack-name AgentIdentity --query 'Stacks[0].Outputs'`. The workflow activates the SES receipt rule set automatically — the same caveat applies: activation replaces the account's active rule set, so if the account already receives mail via SES, merge rules instead (see [infra/README.md](infra/README.md#4-activate-the-receipt-rule-set)).
 
-If the deploy job fails at `configure-aws-credentials`, the usual cause is a trust-policy mismatch: the role only trusts `repo:critical-labs/agent-identity:environment:production`, so the environment name and repository must match exactly.
+If the deploy job fails at `configure-aws-credentials`, the usual cause is a trust-policy mismatch: the role only trusts `repo:<GitHubOrg>/<GitHubRepo>:environment:<EnvironmentName>` as configured in step 2, so the org/repo and environment name must match exactly.
 
 ### Releasing to npm
 
