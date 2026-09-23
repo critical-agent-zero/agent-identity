@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-identity · fleet</title>
+<style>
+/* Single-theme by design: the roster is a terminal-adjacent operations surface.
+   All colors painted explicitly so it holds on any host ground. */
+:root{
+  --bg:#101418; --panel:#161C21; --panel2:#1C242A; --line:#263039;
+  --text:#DEE7E2; --dim:#8FA098; --faint:#5C6B64;
+  --green:#4CC98A; --amber:#D9A93F; --red:#D96A5A; --grey:#6B7A73;
+  --attest:#4CC98A; --claim:#8FA3D9; --mono:"JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 var(--mono)}
+header{display:flex;align-items:baseline;gap:14px;padding:18px 22px;border-bottom:1px solid var(--line)}
+header h1{font-size:15px;font-weight:600;margin:0;letter-spacing:.02em}
+header h1 span{color:var(--green)}
+#meta{color:var(--faint);font-size:12px;margin-left:auto}
+main{display:grid;grid-template-columns:minmax(300px,380px) 1fr;gap:0;min-height:calc(100vh - 58px)}
+@media (max-width:820px){main{grid-template-columns:1fr}}
+#roster{border-right:1px solid var(--line);padding:16px}
+#feed{padding:16px 22px}
+.sect{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin:4px 0 12px}
+.agent{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:10px;cursor:pointer}
+.agent:hover,.agent.sel{border-color:var(--green);background:var(--panel2)}
+.agent .row1{display:flex;align-items:center;gap:10px}
+.dot{width:9px;height:9px;border-radius:50%;flex:none}
+.dot.working{background:var(--green);box-shadow:0 0 6px var(--green)}
+.dot.idle{background:var(--grey)}
+.dot.blocked{background:var(--amber)}
+.dot.stale,.dot.none{background:transparent;border:1.5px solid var(--faint)}
+.aid{font-weight:600;font-size:15px}
+.caps{margin-left:auto;display:flex;gap:5px}
+.cap{font-size:10px;padding:2px 7px;border:1px solid var(--line);border-radius:999px;color:var(--dim)}
+.label{color:var(--dim);font-size:12.5px;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.counts{color:var(--faint);font-size:11px;margin-top:6px}
+.ev{display:grid;grid-template-columns:150px 92px 1fr;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);align-items:baseline}
+@media (max-width:1020px){.ev{grid-template-columns:110px 84px 1fr}}
+.ev .ts{color:var(--faint);font-size:11.5px;font-variant-numeric:tabular-nums}
+.badge{font-size:10px;padding:2px 8px;border-radius:999px;white-space:nowrap;justify-self:start}
+.badge.attested{color:var(--attest);border:1px solid var(--attest)}
+.badge.claimed{color:var(--claim);border:1px dashed var(--claim)}
+.ev .body{min-width:0}
+.ev .sum{overflow-wrap:anywhere}
+.ev .who{color:var(--dim);font-size:12px}
+.ev .who b{color:var(--text);font-weight:600}
+.dual{color:var(--faint);font-size:11.5px;margin-top:2px}
+.dual b{color:var(--dim);font-weight:600}
+#gate{max-width:520px;margin:80px auto;padding:0 22px}
+#gate h2{font-size:15px;font-weight:600}
+#gate p{color:var(--dim);font-size:13px}
+#gate input{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:6px;color:var(--text);font:13px var(--mono);padding:10px 12px;margin:6px 0}
+#gate input:focus{outline:none;border-color:var(--green)}
+#gate button{background:var(--green);color:#0E1512;border:0;border-radius:6px;font:600 13px var(--mono);padding:10px 18px;margin-top:10px;cursor:pointer}
+#err{color:var(--red);font-size:12.5px;min-height:18px;margin-top:8px}
+.empty{color:var(--faint);padding:24px 0}
+footer{padding:14px 22px;border-top:1px solid var(--line);color:var(--faint);font-size:11.5px}
+footer b{color:var(--dim)}
+</style>
+</head>
+<body>
+<header>
+  <h1>agent-identity <span>fleet</span></h1>
+  <div id="meta"></div>
+</header>
+<div id="gate">
+  <h2>Connect to a deployment</h2>
+  <p>Read-only. The viewer key can list the roster and the activity feed — nothing else. Mint one with <code>mailctl viewer-key create</code>.</p>
+  <input id="in-api" placeholder="API URL  https://…execute-api…amazonaws.com" autocomplete="off" spellcheck="false">
+  <input id="in-key" placeholder="Viewer key" autocomplete="off" spellcheck="false">
+  <button id="go">Connect</button>
+  <div id="err"></div>
+</div>
+<main hidden>
+  <div id="roster"><div class="sect">Roster</div><div id="agents"></div></div>
+  <div id="feed"><div class="sect" id="feedtitle">Activity — all agents</div><div id="events"></div></div>
+</main>
+<footer hidden>
+  <b>✓ attested</b> events were witnessed by infrastructure (the forge proxy, mail ingest) and cannot be written by agents.
+  <b style="color:var(--claim)">self-reported</b> events are the agent's own signed account of itself.
+  Commits are authored by the agent and pushed via the shared bot — agents never impersonate their operators, and operators never absorb agent work.
+</footer>
+<script>
+"use strict";
+// All server-derived strings are inserted via textContent — never innerHTML.
+const $ = (id) => document.getElementById(id);
+const state = { api: "", key: "", sel: null, timer: 0 };
+
+const qs = new URLSearchParams(location.search);
+const frag = new URLSearchParams(location.hash.replace(/^#/, ""));
+state.api = qs.get("api") || localStorage.getItem("fleet.api") || "";
+state.key = frag.get("key") || localStorage.getItem("fleet.key") || "";
+$("in-api").value = state.api;
+$("in-key").value = state.key;
+
+async function call(path) {
+  const r = await fetch(state.api.replace(/\/$/, "") + path, { headers: { "x-viewer-key": state.key } });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+function fmtTs(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const today = new Date().toDateString() === d.toDateString();
+  return (today ? "" : d.toISOString().slice(5, 10) + " ") +
+    d.toTimeString().slice(0, 8);
+}
+
+function statusClass(a) {
+  if (!a.status || !a.status.state) return "none";
+  if (a.status.stale) return "stale";
+  return a.status.state; // working | idle | blocked
+}
+
+function renderAgents(list) {
+  const box = $("agents");
+  box.replaceChildren();
+  for (const a of list) {
+    const card = el("div", "agent" + (state.sel === a.agentId ? " sel" : ""));
+    const r1 = el("div", "row1");
+    r1.append(el("span", "dot " + statusClass(a)));
+    r1.append(el("span", "aid", a.agentId));
+    const caps = el("span", "caps");
+    for (const c of a.capabilities || []) caps.append(el("span", "cap", c));
+    r1.append(caps);
+    card.append(r1);
+    if (a.status && a.status.label) {
+      card.append(el("div", "label",
+        (a.status.stale ? "last seen: " : "") + a.status.state + " · " + a.status.label));
+    }
+    card.append(el("div", "counts",
+      (a.counts?.attested ?? 0) + " attested · " + (a.counts?.claimed ?? 0) + " self-reported"));
+    card.addEventListener("click", () => {
+      state.sel = state.sel === a.agentId ? null : a.agentId;
+      refresh();
+    });
+    box.append(card);
+  }
+  if (!list.length) box.append(el("div", "empty", "No identities registered yet."));
+}
+
+function evWho(e) {
+  // The separation principle, rendered: forge events carry dual attribution.
+  if (e.type && e.type.startsWith("forge_")) {
+    const d = el("div", "dual");
+    d.append("authored: ");
+    const b1 = el("b", "", e.agentId);
+    d.append(b1, " · pushed via bot account");
+    return d;
+  }
+  return null;
+}
+
+function renderEvents(list) {
+  const box = $("events");
+  box.replaceChildren();
+  const rows = state.sel ? list.filter((e) => e.agentId === state.sel) : list;
+  $("feedtitle").textContent = state.sel ? "Activity — agent " + state.sel : "Activity — all agents";
+  for (const e of rows) {
+    const row = el("div", "ev");
+    row.append(el("span", "ts", fmtTs(e.ts)));
+    row.append(el("span", "badge " + (e.class === "attested" ? "attested" : "claimed"),
+      e.class === "attested" ? "✓ attested" : "self-reported"));
+    const body = el("div", "body");
+    const who = el("div", "who");
+    who.append(el("b", "", e.agentId), "  " + (e.type || ""));
+    body.append(who);
+    body.append(el("div", "sum", e.summary || ""));
+    const dual = evWho(e);
+    if (dual) body.append(dual);
+    if (e.ref && /^https:\/\/(github\.com|gitlab\.com)\//.test(e.ref)) {
+      const a = el("a", "", "receipt ↗");
+      a.href = e.ref; a.target = "_blank"; a.rel = "noopener";
+      a.style.color = "var(--attest)"; a.style.fontSize = "12px";
+      body.append(a);
+    }
+    row.append(body);
+    box.append(row);
+  }
+  if (!rows.length) box.append(el("div", "empty", "No activity yet."));
+}
+
+async function refresh() {
+  try {
+    const [roster, feed] = await Promise.all([call("/fleet/agents"), call("/fleet/activity?limit=200")]);
+    renderAgents(roster.agents || roster);
+    renderEvents(feed.events || feed);
+    $("meta").textContent = "read-only · refreshed " + new Date().toTimeString().slice(0, 8);
+    $("err") && ($("err").textContent = "");
+  } catch (err) {
+    $("meta").textContent = "refresh failed: " + err.message;
+  }
+}
+
+async function connect() {
+  state.api = $("in-api").value.trim();
+  state.key = $("in-key").value.trim();
+  if (!state.api || !state.key) { $("err").textContent = "API URL and viewer key required."; return; }
+  try {
+    await call("/fleet/agents");
+  } catch (err) {
+    $("err").textContent = "Could not connect (" + err.message + "). Check the URL and viewer key.";
+    return;
+  }
+  localStorage.setItem("fleet.api", state.api);
+  localStorage.setItem("fleet.key", state.key);
+  $("gate").hidden = true;
+  document.querySelector("main").hidden = false;
+  document.querySelector("footer").hidden = false;
+  await refresh();
+  state.timer = setInterval(refresh, 30000);
+}
+
+$("go").addEventListener("click", connect);
+$("in-key").addEventListener("keydown", (e) => { if (e.key === "Enter") connect(); });
+if (state.api && state.key) connect();
+</script>
+</body>
+</html>
