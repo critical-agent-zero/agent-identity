@@ -1,0 +1,2 @@
+[      44ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:4830/?api=https://hs7ymi173j.execute-api.us-east-1.amazonaws.com#key=e034699dd08c669c675f00228e0f500f2a15f81223194eb331eb1cbf9bb3d3e5:0
+[     195ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:4830/favicon.ico:0

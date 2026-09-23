@@ -41,3 +41,23 @@ describe("makeFleetHandler", () => {
     expect(out.status).toBe(405);
   });
 });
+
+describe("resolveFleetUiFile", () => {
+  it("prefers the published layout (package-root fleet/) when present", async () => {
+    const { resolveFleetUiFile } = await import("./fleet-serve.js");
+    const exists = (p: string) => p === "/pkg/fleet/index.html";
+    expect(resolveFleetUiFile("/pkg/dist", exists)).toBe("/pkg/fleet/index.html");
+  });
+
+  it("falls back to the dev checkout layout (packages/dist/fleet/)", async () => {
+    const { resolveFleetUiFile } = await import("./fleet-serve.js");
+    const exists = (p: string) => p === "/repo/packages/dist/fleet/index.html";
+    expect(resolveFleetUiFile("/repo/packages/client/src", exists))
+      .toBe("/repo/packages/dist/fleet/index.html");
+  });
+
+  it("returns undefined when neither layout matches", async () => {
+    const { resolveFleetUiFile } = await import("./fleet-serve.js");
+    expect(resolveFleetUiFile("/nowhere/src", () => false)).toBeUndefined();
+  });
+});

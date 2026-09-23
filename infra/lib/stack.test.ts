@@ -79,3 +79,37 @@ describe("ingest sender allowlist", () => {
     );
   });
 });
+
+describe("cost budget", () => {
+  it("creates a $25 monthly budget with 80% actual and 100% forecast email alerts when budgetEmail is set", () => {
+    const t = synth({}, { budgetEmail: "ops@example.com" });
+    t.hasResourceProperties("AWS::Budgets::Budget", {
+      Budget: {
+        BudgetType: "COST",
+        TimeUnit: "MONTHLY",
+        BudgetLimit: { Amount: 25, Unit: "USD" },
+      },
+      NotificationsWithSubscribers: [
+        {
+          Notification: { NotificationType: "ACTUAL", Threshold: 80 },
+          Subscribers: [{ SubscriptionType: "EMAIL", Address: "ops@example.com" }],
+        },
+        {
+          Notification: { NotificationType: "FORECASTED", Threshold: 100 },
+          Subscribers: [{ SubscriptionType: "EMAIL", Address: "ops@example.com" }],
+        },
+      ],
+    });
+  });
+
+  it("creates no budget when no email is configured", () => {
+    synth().resourceCountIs("AWS::Budgets::Budget", 0);
+  });
+
+  it("honors a budgetUsd override", () => {
+    synth({}, { budgetEmail: "ops@example.com", budgetUsd: "40" })
+      .hasResourceProperties("AWS::Budgets::Budget", {
+        Budget: { BudgetLimit: { Amount: 40, Unit: "USD" } },
+      });
+  });
+});

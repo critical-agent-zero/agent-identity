@@ -8,7 +8,7 @@ import { disableGithub, enableGithub, resolveAdminApiUrl, resolveAdminKey } from
 import { linkGithub, listPool, poolStatus } from "./claims.js";
 import { AgentIdentityClient } from "./client.js";
 import { readMachineConfig, resolveFleetKey, resolveGithubPat } from "./config.js";
-import { makeFleetHandler } from "./fleet-serve.js";
+import { makeFleetHandler, resolveFleetUiFile } from "./fleet-serve.js";
 import { promptAsk } from "./prompt-io.js";
 import { githubApi, onboardGithubEmail } from "./github-onboard.js";
 import { provisionIdentities } from "./provision.js";
@@ -50,12 +50,13 @@ program
     const { readFileSync } = await import("node:fs");
     const { createServer } = await import("node:http");
     const uiFile = opts.uiFile
-      ?? join(dirname(fileURLToPath(import.meta.url)), "..", "fleet", "index.html");
+      ?? resolveFleetUiFile(dirname(fileURLToPath(import.meta.url)));
+    if (!uiFile) return fail("bundled dashboard not found (pass --ui-file <path>)");
     let html: string;
     try {
       html = readFileSync(uiFile, "utf8");
     } catch {
-      return fail(`dashboard file not found at ${uiFile} (use --ui-file in dev checkouts)`);
+      return fail(`dashboard file not readable at ${uiFile}`);
     }
     const port = Number.parseInt(opts.port, 10);
     if (!Number.isInteger(port) || port <= 0 || port > 65535) return fail(`invalid port ${opts.port}`);

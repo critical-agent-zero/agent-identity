@@ -1,4 +1,20 @@
+import { existsSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { join } from "node:path";
+
+/** Locate the bundled dashboard from the caller's module dir. Two layouts:
+ *  published package (<root>/dist/cli.js -> <root>/fleet/) and the dev
+ *  checkout (packages/client/src -> packages/dist/fleet/). */
+export function resolveFleetUiFile(
+  moduleDir: string,
+  exists: (p: string) => boolean = existsSync,
+): string | undefined {
+  const candidates = [
+    join(moduleDir, "..", "fleet", "index.html"),
+    join(moduleDir, "..", "..", "dist", "fleet", "index.html"),
+  ];
+  return candidates.find(exists);
+}
 
 /** Handler for the local fleet-dashboard server: one static page, nothing
  *  else. The page itself talks to the deployment's API with a viewer key —
