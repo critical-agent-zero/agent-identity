@@ -54,6 +54,7 @@ function makeDeps(overrides: Record<string, unknown> = {}): Deps {
     nonces: permissiveNonces,
     readBody: vi.fn(async () => ({ text: "overflow", html: undefined, links: [] })),
     fleetKeyRequired: true,
+    publicRepos: [],
   };
 }
 

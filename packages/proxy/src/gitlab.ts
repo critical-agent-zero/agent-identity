@@ -1,5 +1,6 @@
 import type {
   CommentResult, CommitResult, CommitSpec, ForkResult, PrResult, PrSpec, RepoInfo, RepoRef,
+  RepoVisibility,
 } from "@agent-identity/shared";
 import {
   ForgeError, type Author, type CredentialStore, type Forge,
@@ -169,5 +170,13 @@ export class GitlabForge implements Forge {
       const p = await this.gl<Project>("GET", `/projects/${this.project(existing)}`, actor.name);
       return { owner: p.namespace.full_path, repo: p.path, defaultBranch: p.default_branch };
     }
+  }
+
+  async repoVisibility(ref: RepoRef, actor: Author): Promise<RepoVisibility> {
+    const p = await this.gl<{ visibility?: string }>(
+      "GET", `/projects/${this.project(ref)}`, actor.name);
+    // GitLab's own tri-state: only "public" is world-readable; "internal"
+    // (any signed-in user) and "private" — and a missing field — are not.
+    return p.visibility === "public" ? "public" : "private";
   }
 }

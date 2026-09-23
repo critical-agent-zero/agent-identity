@@ -82,6 +82,23 @@ export class AgentIdentityStack extends Stack {
     const apiFn = new NodejsFunction(this, "Api", {
       ...fnDefaults,
       entry: pkg("api/src/lambda.ts"),
+      environment: {
+        ...commonEnv,
+        // Repos the UNAUTHENTICATED public fleet tier may mention:
+        // comma-separated "owner/repo" or "owner/*" patterns, matched
+        // case-insensitively on exact segments. Defaults to EMPTY — an empty
+        // allowlist means the public tier shows no forge events at all.
+        //
+        // HAZARD — these are NAME patterns, not a visibility check: an
+        // "owner/*" wildcard also covers every PRIVATE repo that owner has
+        // now or gains later. The name allowlist is therefore only one of
+        // two gates: the public tier additionally requires the proxy's
+        // attestation-time stamp detail.visibility === "public" (the repo's
+        // actual visibility, read from the forge) before a forge event is
+        // shown. Events without the stamp — including everything attested
+        // before stamping existed — are never shown publicly.
+        PUBLIC_REPOS: this.node.tryGetContext("publicRepos") ?? "",
+      },
     });
     table.grantReadWriteData(apiFn);
     bucket.grantRead(apiFn);

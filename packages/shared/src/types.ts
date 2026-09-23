@@ -59,6 +59,13 @@ export interface PrSpec {
   body: string;
 }
 
+/** A repo's ACTUAL visibility on the forge, as read at attestation time.
+ *  Deliberately binary: anything that is not world-readable ("private",
+ *  GitLab "internal", GHES "internal", unknown) collapses to "private" —
+ *  the public fleet tier publishes a forge event only when the proxy
+ *  stamped detail.visibility === "public". */
+export type RepoVisibility = "public" | "private";
+
 export interface RepoInfo {
   defaultBranch: string;
   headSha: string;

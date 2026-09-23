@@ -55,6 +55,9 @@ main{display:grid;grid-template-columns:minmax(300px,380px) 1fr;gap:0;min-height
 #gate input{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:6px;color:var(--text);font:13px var(--mono);padding:10px 12px;margin:6px 0}
 #gate input:focus{outline:none;border-color:var(--green)}
 #gate button{background:var(--green);color:#0E1512;border:0;border-radius:6px;font:600 13px var(--mono);padding:10px 18px;margin-top:10px;cursor:pointer}
+#gate button.alt{background:transparent;color:var(--dim);border:1px solid var(--line);margin-left:8px}
+#gate button.alt:hover{border-color:var(--green);color:var(--text)}
+#gate .hint{color:var(--faint);font-size:12px;margin-top:10px}
 #err{color:var(--red);font-size:12.5px;min-height:18px;margin-top:8px}
 .empty{color:var(--faint);padding:24px 0}
 footer{padding:14px 22px;border-top:1px solid var(--line);color:var(--faint);font-size:11.5px}
@@ -72,6 +75,8 @@ footer b{color:var(--dim)}
   <input id="in-api" placeholder="API URL  https://…execute-api…amazonaws.com" autocomplete="off" spellcheck="false">
   <input id="in-key" placeholder="Viewer key" autocomplete="off" spellcheck="false">
   <button id="go">Connect</button>
+  <button id="go-public" class="alt">View public fleet</button>
+  <div class="hint">Public fleet needs the API URL only — no key. It shows allowlisted public repositories only; anything else is simply absent.</div>
   <div id="err"></div>
 </div>
 <main hidden>
@@ -87,7 +92,7 @@ footer b{color:var(--dim)}
 "use strict";
 // All server-derived strings are inserted via textContent — never innerHTML.
 const $ = (id) => document.getElementById(id);
-const state = { api: "", key: "", sel: null, timer: 0 };
+const state = { api: "", key: "", pub: false, sel: null, timer: 0 };
 
 const qs = new URLSearchParams(location.search);
 const frag = new URLSearchParams(location.hash.replace(/^#/, ""));
@@ -96,8 +101,13 @@ state.key = frag.get("key") || localStorage.getItem("fleet.key") || "";
 $("in-api").value = state.api;
 $("in-key").value = state.key;
 
+// Public mode hits the unauthenticated /fleet/public routes and sends no
+// credential at all; keyed mode is unchanged.
+const fleetBase = () => (state.pub ? "/fleet/public" : "/fleet");
+
 async function call(path) {
-  const r = await fetch(state.api.replace(/\/$/, "") + path, { headers: { "x-viewer-key": state.key } });
+  const headers = state.pub ? {} : { "x-viewer-key": state.key };
+  const r = await fetch(state.api.replace(/\/$/, "") + path, { headers });
   if (!r.ok) throw new Error("HTTP " + r.status);
   return r.json();
 }
@@ -193,28 +203,38 @@ function renderEvents(list) {
 
 async function refresh() {
   try {
-    const [roster, feed] = await Promise.all([call("/fleet/agents"), call("/fleet/activity?limit=200")]);
+    const [roster, feed] = await Promise.all([
+      call(fleetBase() + "/agents"), call(fleetBase() + "/activity?limit=200"),
+    ]);
     renderAgents(roster.agents || roster);
     renderEvents(feed.events || feed);
-    $("meta").textContent = "read-only · refreshed " + new Date().toTimeString().slice(0, 8);
+    $("meta").textContent =
+      (state.pub ? "public view — allowlisted public repositories only" : "read-only") +
+      " · refreshed " + new Date().toTimeString().slice(0, 8);
     $("err") && ($("err").textContent = "");
   } catch (err) {
     $("meta").textContent = "refresh failed: " + err.message;
   }
 }
 
-async function connect() {
+async function connect(pub) {
+  state.pub = pub === true;
   state.api = $("in-api").value.trim();
-  state.key = $("in-key").value.trim();
-  if (!state.api || !state.key) { $("err").textContent = "API URL and viewer key required."; return; }
+  state.key = state.pub ? "" : $("in-key").value.trim();
+  if (!state.api || (!state.pub && !state.key)) {
+    $("err").textContent = state.pub ? "API URL required." : "API URL and viewer key required.";
+    return;
+  }
   try {
-    await call("/fleet/agents");
+    await call(fleetBase() + "/agents");
   } catch (err) {
-    $("err").textContent = "Could not connect (" + err.message + "). Check the URL and viewer key.";
+    $("err").textContent = "Could not connect (" + err.message + ")." +
+      (state.pub ? " Check the URL." : " Check the URL and viewer key.");
     return;
   }
   localStorage.setItem("fleet.api", state.api);
-  localStorage.setItem("fleet.key", state.key);
+  localStorage.setItem("fleet.mode", state.pub ? "public" : "keyed");
+  if (!state.pub) localStorage.setItem("fleet.key", state.key);
   $("gate").hidden = true;
   document.querySelector("main").hidden = false;
   document.querySelector("footer").hidden = false;
@@ -222,9 +242,11 @@ async function connect() {
   state.timer = setInterval(refresh, 30000);
 }
 
-$("go").addEventListener("click", connect);
-$("in-key").addEventListener("keydown", (e) => { if (e.key === "Enter") connect(); });
-if (state.api && state.key) connect();
+$("go").addEventListener("click", () => connect(false));
+$("go-public").addEventListener("click", () => connect(true));
+$("in-key").addEventListener("keydown", (e) => { if (e.key === "Enter") connect(false); });
+if (state.api && state.key) connect(false);
+else if (state.api && localStorage.getItem("fleet.mode") === "public") connect(true);
 </script>
 </body>
 </html>

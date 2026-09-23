@@ -1,3 +1,4 @@
+import { parseRepoAllowlist } from "@agent-identity/shared";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
@@ -26,6 +27,9 @@ const app = createApp({
     return JSON.parse(await res.Body!.transformToString());
   },
   fleetKeyRequired: process.env.FLEET_KEY_REQUIRED !== "false",
+  // Unset or empty PUBLIC_REPOS parses to the empty allowlist: the public
+  // fleet tier then shows no forge events at all — fail closed.
+  publicRepos: parseRepoAllowlist(process.env.PUBLIC_REPOS ?? ""),
 });
 
 export const handler = handle(app);

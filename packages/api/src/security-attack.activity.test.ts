@@ -41,6 +41,7 @@ function makeDeps(): Deps {
     nonces: { recordOnce: async () => true } as never as NoncesRepo,
     readBody: vi.fn(async () => ({ text: "", links: [] })),
     fleetKeyRequired: true,
+    publicRepos: [],
   };
 }
 
