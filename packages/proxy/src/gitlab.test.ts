@@ -47,6 +47,7 @@ describe("GitlabForge.getRepo", () => {
 describe("GitlabForge.createCommit", () => {
   it("probes file existence to choose create vs update and forces the author", async () => {
     const { fn, calls } = makeFetch({
+      [`GET ${P}/repository/branches/main`]: { json: { name: "main" } },
       [`GET ${P}/repository/files/exists.txt?ref=main`]: { json: { file_path: "exists.txt" } },
       [`GET ${P}/repository/files/new.txt?ref=main`]: { status: 404, json: { message: "404" } },
       [`POST ${P}/repository/commits`]: {
@@ -68,6 +69,60 @@ describe("GitlabForge.createCommit", () => {
         { action: "create", file_path: "new.txt", content: "B" },
       ],
     });
+  });
+});
+
+describe("GitlabForge.createCommit branch auto-create", () => {
+  const spec = { branch: "feat-x", message: "m", files: [{ path: "a.txt", content: "A" }] };
+
+  it("creates a missing branch from the project's OWN default branch, then commits", async () => {
+    const { fn, calls } = makeFetch({
+      [`GET ${P}/repository/branches/feat-x`]: { status: 404, json: { message: "404 Branch Not Found" } },
+      [`GET ${P}`]: { json: { default_branch: "main" } },
+      [`POST ${P}/repository/branches`]: { status: 201, json: { name: "feat-x" } },
+      [`GET ${P}/repository/files/a.txt?ref=feat-x`]: { status: 404, json: { message: "404" } },
+      [`POST ${P}/repository/commits`]: {
+        json: { id: "sha1", web_url: "https://gitlab.com/o/r/-/commit/sha1" },
+      },
+    });
+    const forge = new GitlabForge({ credentials, fetch: fn });
+    const result = await forge.createCommit({ owner: "o", name: "r" }, spec, actor);
+    expect(result).toEqual({ sha: "sha1", url: "https://gitlab.com/o/r/-/commit/sha1" });
+
+    const branchCreate = calls.findIndex((c) => c.url === `${P}/repository/branches` && c.init.method === "POST");
+    expect(branchCreate).toBeGreaterThan(-1);
+    expect(JSON.parse(calls[branchCreate]!.init.body as string)).toEqual({
+      branch: "feat-x", ref: "main",
+    });
+    const commitPost = calls.findIndex((c) => c.url === `${P}/repository/commits`);
+    expect(branchCreate).toBeLessThan(commitPost);
+    expect(JSON.parse(calls[commitPost]!.init.body as string).branch).toBe("feat-x");
+  });
+
+  it("falls through to committing when the branch appears between check and create", async () => {
+    const { fn } = makeFetch({
+      [`GET ${P}/repository/branches/feat-x`]: { status: 404, json: { message: "404 Branch Not Found" } },
+      [`GET ${P}`]: { json: { default_branch: "main" } },
+      [`POST ${P}/repository/branches`]: { status: 400, json: { message: "Branch already exists" } },
+      [`GET ${P}/repository/files/a.txt?ref=feat-x`]: { json: { file_path: "a.txt" } },
+      [`POST ${P}/repository/commits`]: {
+        json: { id: "sha1", web_url: "https://gitlab.com/o/r/-/commit/sha1" },
+      },
+    });
+    const forge = new GitlabForge({ credentials, fetch: fn });
+    const result = await forge.createCommit({ owner: "o", name: "r" }, spec, actor);
+    expect(result).toEqual({ sha: "sha1", url: "https://gitlab.com/o/r/-/commit/sha1" });
+  });
+
+  it("surfaces retryable not_found for an empty project (fresh fork still importing), writing nothing", async () => {
+    const { fn, calls } = makeFetch({
+      [`GET ${P}/repository/branches/feat-x`]: { status: 404, json: { message: "404 Branch Not Found" } },
+      [`GET ${P}`]: { json: { default_branch: null } },
+    });
+    const forge = new GitlabForge({ credentials, fetch: fn });
+    await expect(forge.createCommit({ owner: "o", name: "r" }, spec, actor))
+      .rejects.toMatchObject({ kind: "not_found" });
+    expect(calls.every((c) => (c.init.method ?? "GET") === "GET")).toBe(true);
   });
 });
 

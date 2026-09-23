@@ -5,13 +5,20 @@ import { GithubForge } from "./github.js";
 const credentials: CredentialStore = { resolve: async () => "tok123" };
 const actor = { name: "482913", email: "482913@agents.example" };
 
-/** fetch fake: responds per "METHOD url" from a routing table; records calls. */
-function makeFetch(routes: Record<string, { status?: number; json?: unknown; text?: string; headers?: Record<string, string> }>) {
+type FakeRoute = { status?: number; json?: unknown; text?: string; headers?: Record<string, string> };
+
+/** fetch fake: responds per "METHOD url" from a routing table; records calls.
+ *  An array value answers in sequence (last entry repeats) — for endpoints
+ *  whose response changes between calls, e.g. a ref that appears mid-flow. */
+function makeFetch(routes: Record<string, FakeRoute | FakeRoute[]>) {
   const calls: { url: string; init: RequestInit }[] = [];
   const fn = vi.fn(async (url: string, init: RequestInit = {}) => {
     calls.push({ url, init });
     const key = `${init.method ?? "GET"} ${url}`;
-    const route = routes[key];
+    const entry = routes[key];
+    const route = Array.isArray(entry)
+      ? (entry.length > 1 ? entry.shift() : entry[0])
+      : entry;
     if (!route) throw new Error(`unexpected fetch: ${key}`);
     const body = route.text ?? JSON.stringify(route.json ?? {});
     return new Response(body, { status: route.status ?? 200, headers: route.headers });
@@ -119,6 +126,71 @@ describe("GithubForge.createCommit", () => {
     const forge = new GithubForge({ credentials, fetch: fn });
     await expect(forge.createCommit({ owner: "o", name: "r" }, spec, actor))
       .rejects.toMatchObject({ kind: "non_fast_forward" });
+  });
+});
+
+describe("GithubForge.createCommit branch auto-create", () => {
+  const spec = {
+    branch: "feat-x", message: "feat: x",
+    files: [{ path: "a.txt", content: "A" }],
+  };
+
+  it("creates a missing branch from the repo's OWN default-branch head, then commits", async () => {
+    const { fn, calls } = makeFetch({
+      [`GET ${B}/git/ref/heads/feat-x`]: { status: 404, json: { message: "Not Found" } },
+      [`GET ${B}`]: { json: { default_branch: "main" } },
+      [`GET ${B}/git/ref/heads/main`]: { json: { object: { sha: "defhead" } } },
+      [`POST ${B}/git/refs`]: { status: 201, json: { ref: "refs/heads/feat-x", object: { sha: "defhead" } } },
+      [`GET ${B}/git/commits/defhead`]: { json: { tree: { sha: "tree0" } } },
+      [`POST ${B}/git/trees`]: { json: { sha: "tree1" } },
+      [`POST ${B}/git/commits`]: { json: { sha: "commit1", html_url: "https://github.com/o/r/commit/commit1" } },
+      [`PATCH ${B}/git/refs/heads/feat-x`]: { json: { object: { sha: "commit1" } } },
+    });
+    const forge = new GithubForge({ credentials, fetch: fn });
+    const result = await forge.createCommit({ owner: "o", name: "r" }, spec, actor);
+    expect(result).toEqual({ sha: "commit1", url: "https://github.com/o/r/commit/commit1" });
+
+    const refCreate = calls.findIndex((c) => c.url.endsWith("/git/refs") && c.init.method === "POST");
+    expect(refCreate).toBeGreaterThan(-1);
+    expect(JSON.parse(calls[refCreate]!.init.body as string)).toEqual({
+      ref: "refs/heads/feat-x", sha: "defhead",
+    });
+    const commitPost = calls.findIndex((c) => c.url.endsWith("/git/commits") && c.init.method === "POST");
+    expect(refCreate).toBeLessThan(commitPost);
+    expect(JSON.parse(calls[commitPost]!.init.body as string).parents).toEqual(["defhead"]);
+  });
+
+  it("falls through to committing when the ref appears between check and create", async () => {
+    const { fn, calls } = makeFetch({
+      [`GET ${B}/git/ref/heads/feat-x`]: [
+        { status: 404, json: { message: "Not Found" } },
+        { json: { object: { sha: "racedhead" } } },
+      ],
+      [`GET ${B}`]: { json: { default_branch: "main" } },
+      [`GET ${B}/git/ref/heads/main`]: { json: { object: { sha: "defhead" } } },
+      [`POST ${B}/git/refs`]: { status: 422, json: { message: "Reference already exists" } },
+      [`GET ${B}/git/commits/racedhead`]: { json: { tree: { sha: "tree0" } } },
+      [`POST ${B}/git/trees`]: { json: { sha: "tree1" } },
+      [`POST ${B}/git/commits`]: { json: { sha: "commit1", html_url: "https://github.com/o/r/commit/commit1" } },
+      [`PATCH ${B}/git/refs/heads/feat-x`]: { json: { object: { sha: "commit1" } } },
+    });
+    const forge = new GithubForge({ credentials, fetch: fn });
+    const result = await forge.createCommit({ owner: "o", name: "r" }, spec, actor);
+    expect(result).toEqual({ sha: "commit1", url: "https://github.com/o/r/commit/commit1" });
+    const commitPost = calls.find((c) => c.url.endsWith("/git/commits") && c.init.method === "POST")!;
+    expect(JSON.parse(commitPost.init.body as string).parents).toEqual(["racedhead"]);
+  });
+
+  it("surfaces retryable not_found for an empty repo (fresh fork still importing), writing nothing", async () => {
+    const { fn, calls } = makeFetch({
+      [`GET ${B}/git/ref/heads/feat-x`]: { status: 404, json: { message: "Not Found" } },
+      [`GET ${B}`]: { json: { default_branch: "main" } },
+      [`GET ${B}/git/ref/heads/main`]: { status: 404, json: { message: "Git Repository is empty." } },
+    });
+    const forge = new GithubForge({ credentials, fetch: fn });
+    await expect(forge.createCommit({ owner: "o", name: "r" }, spec, actor))
+      .rejects.toMatchObject({ kind: "not_found" });
+    expect(calls.every((c) => (c.init.method ?? "GET") === "GET")).toBe(true);
   });
 });
 

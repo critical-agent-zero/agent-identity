@@ -58,12 +58,43 @@ export class GithubForge implements Forge {
     return { defaultBranch: repo.default_branch, headSha: head.object.sha };
   }
 
+  /** Head sha of the branch, auto-creating it when missing (issue #93):
+   *  the ref is created from THIS repo's default-branch head — never the
+   *  source repo's — so a fresh fork needs no raw-PAT branch setup. Runs
+   *  only inside createCommit, which the proxy policy-gates before any call. */
+  private async resolveBranchHead(r: string, branch: string, agentId: string): Promise<string> {
+    try {
+      const head = await this.gh<{ object: { sha: string } }>(
+        "GET", `${r}/git/ref/heads/${branch}`, agentId);
+      return head.object.sha;
+    } catch (err) {
+      if (!(err instanceof ForgeError && err.kind === "not_found")) throw err;
+    }
+    // An empty repo (fresh fork still importing) 404s here — the existing
+    // retryable not_found, not a new error class.
+    const repo = await this.gh<{ default_branch: string }>("GET", r, agentId);
+    const def = await this.gh<{ object: { sha: string } }>(
+      "GET", `${r}/git/ref/heads/${repo.default_branch}`, agentId);
+    try {
+      await this.gh("POST", `${r}/git/refs`, agentId,
+        { ref: `refs/heads/${branch}`, sha: def.object.sha });
+      return def.object.sha;
+    } catch (err) {
+      // The ref appeared between check and create — commit onto it as-is.
+      if (err instanceof ForgeError && err.upstream === 422 && /already exists/i.test(err.message)) {
+        const head = await this.gh<{ object: { sha: string } }>(
+          "GET", `${r}/git/ref/heads/${branch}`, agentId);
+        return head.object.sha;
+      }
+      throw err;
+    }
+  }
+
   async createCommit(ref: RepoRef, spec: CommitSpec, actor: Author): Promise<CommitResult> {
     const r = `/repos/${ref.owner}/${ref.name}`;
-    const head = await this.gh<{ object: { sha: string } }>(
-      "GET", `${r}/git/ref/heads/${spec.branch}`, actor.name);
+    const headSha = await this.resolveBranchHead(r, spec.branch, actor.name);
     const baseCommit = await this.gh<{ tree: { sha: string } }>(
-      "GET", `${r}/git/commits/${head.object.sha}`, actor.name);
+      "GET", `${r}/git/commits/${headSha}`, actor.name);
     const tree = await this.gh<{ sha: string }>("POST", `${r}/git/trees`, actor.name, {
       base_tree: baseCommit.tree.sha,
       tree: spec.files.map((f) => ({
@@ -75,7 +106,7 @@ export class GithubForge implements Forge {
     // is the attribution model, not an oversight.
     const commit = await this.gh<{ sha: string; html_url: string }>(
       "POST", `${r}/git/commits`, actor.name, {
-        message: spec.message, tree: tree.sha, parents: [head.object.sha],
+        message: spec.message, tree: tree.sha, parents: [headSha],
         author: { name: actor.name, email: actor.email },
       });
     await this.gh("PATCH", `${r}/git/refs/heads/${spec.branch}`, actor.name,
