@@ -126,6 +126,15 @@ export function createProxyApp(deps: ProxyDeps): Hono {
   });
 
   const isStr = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+  // owner/repo/branch are interpolated into upstream URL paths by adapters,
+  // where fetch's WHATWG URL normalization turns ".." into an escape from the
+  // policy-pinned fork repo — so names must be single path segments and a
+  // branch may contain "/" but never dot segments, "..", "\", or controls.
+  const isName = (v: unknown): v is string =>
+    isStr(v) && /^[A-Za-z0-9_.-]+$/.test(v) && !/^\.+$/.test(v);
+  const isBranch = (v: unknown): v is string =>
+    isStr(v) && !v.includes("..") && !/[\\\u0000-\u001f\u007f]/.test(v) &&
+    v.split("/").every((s) => s.length > 0 && s !== ".");
   const isFiles = (v: unknown): v is { path: string; content: string }[] =>
     Array.isArray(v) && v.length > 0 &&
     v.every((f) => isStr((f as { path?: unknown }).path) &&
@@ -135,7 +144,7 @@ export function createProxyApp(deps: ProxyDeps): Hono {
     const g = guard(c);
     if (g instanceof Response) return g;
     const b = await c.req.json().catch(() => undefined) as Record<string, unknown> | undefined;
-    if (!b || !isStr(b.owner) || !isStr(b.repo) || !isStr(b.branch)
+    if (!b || !isName(b.owner) || !isName(b.repo) || !isBranch(b.branch)
       || !isStr(b.message) || !isFiles(b.files)) {
       return c.json({ error: "invalid_request" }, 400);
     }

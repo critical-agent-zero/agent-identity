@@ -7,6 +7,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createProxyApp, type ProxyDeps } from "./app.js";
 import type { Author, Forge } from "./forge.js";
 import { ForgeError } from "./forge.js";
+import { GithubForge } from "./github.js";
+import { forkNamespacePolicy } from "./policy.js";
 
 const kp = generateKeypair();
 
@@ -443,5 +445,27 @@ describe("policy enforcement", () => {
     expect((await res.json()).error).toBe("denied");
     expect(forge.calls.some((c) => c[0] === "createCommit")).toBe(false);
     expect(audit).toHaveBeenCalledWith(expect.objectContaining({ outcome: "denied" }));
+  });
+
+  it("fork-namespace rejection fires before branch auto-creation: no upstream request at all", async () => {
+    const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
+    const github = new GithubForge({
+      credentials: { resolve: async () => "tok" },
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+    const { deps } = makeDeps({
+      forges: { github },
+      policy: forkNamespacePolicy({ githubForkOwner: "fork-acct" }),
+    });
+    const app = createProxyApp(deps);
+    const path = "/forge/github/commit";
+    const body = JSON.stringify({
+      owner: "critical-labs", repo: "agent-identity", branch: "feat-x",
+      message: "m", files: [{ path: "f", content: "x" }],
+    });
+    const res = await app.request(path, { ...signed("POST", path, body), body });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe("denied");
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

@@ -15,9 +15,24 @@ export async function createFleetKey(
   return key;
 }
 
+// ADMINKEY# is deliberately a separate namespace from FLEET#: agents hold
+// fleet keys for auto-provisioning and must never be able to use one to
+// grant capabilities.
+export async function createAdminKey(
+  ddb: DynamoDBDocumentClient, table: string, label: string,
+): Promise<string> {
+  const key = randomBytes(32).toString("hex");
+  const hash = createHash("sha256").update(key).digest("hex");
+  await ddb.send(new PutCommand({
+    TableName: table,
+    Item: { PK: `ADMINKEY#${hash}`, SK: "ADMINKEY", label, createdAt: new Date().toISOString() },
+  }));
+  return key;
+}
+
 /** Read-only dashboard credential: only ever checked on GET /fleet routes,
  *  stored hashed like the fleet key but in its own VIEWER partition so the
- *  two credential classes can never stand in for each other. */
+ *  credential classes can never stand in for each other. */
 export async function createViewerKey(
   ddb: DynamoDBDocumentClient, table: string, label: string,
 ): Promise<string> {

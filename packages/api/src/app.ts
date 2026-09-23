@@ -3,7 +3,7 @@ import {
   type ActivityEvent, type AgentStatusState,
 } from "@agent-identity/shared";
 import { Hono } from "hono";
-import { signatureAuth } from "./auth.js";
+import { adminKeyAuth, signatureAuth } from "./auth.js";
 import type { ActivityRepo } from "./db/activity.js";
 import type { AgentsRepo } from "./db/agents.js";
 import { InvalidCursorError, type EmailsRepo } from "./db/emails.js";
@@ -21,11 +21,50 @@ export interface Deps {
 const isFleetPath = (pathname: string): boolean =>
   pathname === "/fleet" || pathname.startsWith("/fleet/");
 
+// Capability tags are operator-defined slugs; the shape bound keeps
+// attacker-shaped strings out of the data layer.
+const CAPABILITY_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+
 export function createApp(deps: Deps): Hono {
   const app = new Hono();
-  const sigAuth = signatureAuth(deps.agents, deps.nonces);
 
-  // Two disjoint credential domains, chosen by path:
+  // Mounted BEFORE signatureAuth: admin routes are gated only by the admin
+  // key, and signature-auth'd agents never reach them. Nothing here is
+  // exposed through the MCP surface — the agent-facing client has no admin
+  // methods.
+  const admin = new Hono();
+  admin.use("*", adminKeyAuth(deps.agents));
+
+  admin.post("/agents/:agentId/capabilities", async (c) => {
+    let capability: unknown;
+    try {
+      capability = ((await c.req.json()) as { capability?: unknown }).capability;
+    } catch {
+      return c.json({ error: "invalid body" }, 400);
+    }
+    if (typeof capability !== "string" || !CAPABILITY_RE.test(capability))
+      return c.json({ error: "invalid capability" }, 400);
+    const agentId = c.req.param("agentId");
+    const capabilities = await deps.agents.addCapability(agentId, capability);
+    if (!capabilities) return c.json({ error: "not found" }, 404);
+    return c.json({ agentId, capabilities });
+  });
+
+  admin.delete("/agents/:agentId/capabilities/:capability", async (c) => {
+    const capability = c.req.param("capability");
+    if (!CAPABILITY_RE.test(capability)) return c.json({ error: "invalid capability" }, 400);
+    const agentId = c.req.param("agentId");
+    const capabilities = await deps.agents.removeCapability(agentId, capability);
+    if (!capabilities) return c.json({ error: "not found" }, 404);
+    return c.json({ agentId, capabilities });
+  });
+
+  app.route("/admin", admin);
+
+  const sigAuth = signatureAuth(deps.agents, deps.nonces);
+  // Three disjoint credential domains, chosen by path:
+  //  - /admin/* (mounted above, so requests never reach this middleware) is
+  //    admin-key territory.
   //  - /fleet/* is viewer-key territory: read-only dashboard credential. A
   //    valid agent signature (or the fleet registration key) is deliberately
   //    NOT accepted here.
