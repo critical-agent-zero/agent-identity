@@ -1,5 +1,5 @@
 import {
-  fingerprint, sanitizeActivityText, STATUS_LABEL_MAX, STATUS_STATES, TASK_NOTE_MAX,
+  fingerprint, publicView, sanitizeActivityText, STATUS_LABEL_MAX, STATUS_STATES, TASK_NOTE_MAX,
   type ActivityEvent, type AgentStatusState,
 } from "@agent-identity/shared";
 import { Hono } from "hono";
@@ -16,6 +16,10 @@ export interface Deps {
   nonces: NoncesRepo;
   readBody: (s3Key: string) => Promise<{ text: string; html?: string; links: string[] }>;
   fleetKeyRequired: boolean;
+  /** Normalized repo allowlist for the UNAUTHENTICATED public fleet tier
+   *  (parseRepoAllowlist of PUBLIC_REPOS). Empty — the default — means the
+   *  public tier shows no forge events at all: fail closed. */
+  publicRepos: string[];
 }
 
 const isFleetPath = (pathname: string): boolean =>
@@ -61,13 +65,55 @@ export function createApp(deps: Deps): Hono {
 
   app.route("/admin", admin);
 
+  // Public fleet tier — UNAUTHENTICATED BY DESIGN. Mounted, like /admin,
+  // BEFORE the credential middleware: these two GETs deliberately bypass all
+  // three credential domains (the API-gateway stage throttle is the rate
+  // bound), and any other /fleet/public path or method falls through to the
+  // viewer-key wall below. Everything served here passes through the shared
+  // publicView() projection, which is fail-closed: forge events only for
+  // repos on the deps.publicRepos allowlist (default empty = none), status
+  // without labels, task notes never, refs re-validated. Excluded events are
+  // absent — no placeholder, no count. No request parameter can widen the
+  // output: limit is clamped, nothing else is honored, and the source window
+  // read from storage is fixed server-side.
+  const PUBLIC_FEED_DEFAULT = 50;
+  const PUBLIC_FEED_MAX = 100;
+  const PUBLIC_SOURCE_WINDOW = 200; // pre-projection read; repo clamps to its own max
+
+  const publicFleet = new Hono();
+
+  publicFleet.get("/agents", async (c) => {
+    const [roster, feed] = await Promise.all([
+      deps.activity.fleetRoster(),
+      deps.activity.listFleetEvents({ limit: PUBLIC_SOURCE_WINDOW }),
+    ]);
+    // Roster counts are recomputed over PUBLIC events only — the stored
+    // per-class totals would otherwise leak private-work tempo.
+    const { agents } = publicView(feed.events, roster, deps.publicRepos);
+    return c.json({ publicView: true, agents });
+  });
+
+  publicFleet.get("/activity", async (c) => {
+    const n = Number(c.req.query("limit"));
+    const limit = Number.isFinite(n)
+      ? Math.min(Math.max(Math.trunc(n), 1), PUBLIC_FEED_MAX)
+      : PUBLIC_FEED_DEFAULT;
+    const feed = await deps.activity.listFleetEvents({ limit: PUBLIC_SOURCE_WINDOW });
+    const { events } = publicView(feed.events, [], deps.publicRepos);
+    return c.json({ publicView: true, events: events.slice(0, limit) });
+  });
+
+  app.route("/fleet/public", publicFleet);
+
   const sigAuth = signatureAuth(deps.agents, deps.nonces);
   // Three disjoint credential domains, chosen by path:
   //  - /admin/* (mounted above, so requests never reach this middleware) is
   //    admin-key territory.
   //  - /fleet/* is viewer-key territory: read-only dashboard credential. A
   //    valid agent signature (or the fleet registration key) is deliberately
-  //    NOT accepted here.
+  //    NOT accepted here. (The two GET /fleet/public routes mounted above
+  //    answer first and never reach this wall; any other /fleet/public path
+  //    or method still lands here and demands the viewer key.)
   //  - everything else is signature territory: a viewer key presented there
   //    hits the signature check and fails, making the viewer key read-only
   //    by construction.

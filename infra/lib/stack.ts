@@ -82,6 +82,14 @@ export class AgentIdentityStack extends Stack {
     const apiFn = new NodejsFunction(this, "Api", {
       ...fnDefaults,
       entry: pkg("api/src/lambda.ts"),
+      environment: {
+        ...commonEnv,
+        // Repos the UNAUTHENTICATED public fleet tier may mention:
+        // comma-separated "owner/repo" or "owner/*" patterns, matched
+        // case-insensitively on exact segments. Defaults to EMPTY — an empty
+        // allowlist means the public tier shows no forge events at all.
+        PUBLIC_REPOS: this.node.tryGetContext("publicRepos") ?? "",
+      },
     });
     table.grantReadWriteData(apiFn);
     bucket.grantRead(apiFn);

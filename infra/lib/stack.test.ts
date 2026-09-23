@@ -26,6 +26,27 @@ describe("api throttling", () => {
   });
 });
 
+describe("public fleet repo allowlist", () => {
+  it("defaults PUBLIC_REPOS to the empty string — the public tier fails closed", () => {
+    synth().hasResourceProperties("AWS::Lambda::Function", {
+      Environment: {
+        Variables: Match.objectLike({ PUBLIC_REPOS: "", TABLE_NAME: Match.anyValue() }),
+      },
+    });
+  });
+
+  it("honors the publicRepos context", () => {
+    synth({}, { publicRepos: "critical-labs/*,acme/widgets" }).hasResourceProperties(
+      "AWS::Lambda::Function",
+      {
+        Environment: {
+          Variables: Match.objectLike({ PUBLIC_REPOS: "critical-labs/*,acme/widgets" }),
+        },
+      },
+    );
+  });
+});
+
 describe("ingest sender allowlist", () => {
   it("defaults MAIL_SENDER_ALLOWLIST to the forge domains", () => {
     synth().hasResourceProperties("AWS::Lambda::Function", {
