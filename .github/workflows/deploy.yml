@@ -47,6 +47,7 @@ jobs:
       - name: Check required configuration
         env:
           MAIL_DOMAIN: ${{ secrets.MAIL_DOMAIN }}
+          BUDGET_EMAIL: ${{ secrets.BUDGET_EMAIL }}
           AWS_REGION: ${{ vars.AWS_REGION }}
           AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
         run: |

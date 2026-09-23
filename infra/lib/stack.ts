@@ -3,6 +3,7 @@ import {
 } from "aws-cdk-lib";
 import { CfnStage, CorsHttpMethod, HttpApi, HttpMethod } from "aws-cdk-lib/aws-apigatewayv2";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import { CfnBudget } from "aws-cdk-lib/aws-budgets";
 import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb";
 import { PolicyStatement } from "aws-cdk-lib/aws-iam";
 import { Runtime } from "aws-cdk-lib/aws-lambda";
@@ -162,6 +163,34 @@ export class AgentIdentityStack extends Stack {
         ],
       }],
     });
+
+    // Account-level cost alarm: 80% actual and 100% forecast of the monthly
+    // cap email the operator. Opt-in via budgetEmail context or BUDGET_EMAIL
+    // env (kept out of argv/repo — the address is personal data). Covers the
+    // whole account, which is the protective reading for a dedicated account.
+    const budgetEmail = this.node.tryGetContext("budgetEmail") ?? process.env.BUDGET_EMAIL;
+    if (budgetEmail) {
+      const budgetUsd = Number(this.node.tryGetContext("budgetUsd") ?? 25);
+      if (!(Number.isFinite(budgetUsd) && budgetUsd > 0)) throw new Error("budgetUsd must be a positive number");
+      new CfnBudget(this, "CostBudget", {
+        budget: {
+          budgetName: "agent-identity-monthly",
+          budgetType: "COST",
+          timeUnit: "MONTHLY",
+          budgetLimit: { amount: budgetUsd, unit: "USD" },
+        },
+        notificationsWithSubscribers: [
+          {
+            notification: { notificationType: "ACTUAL", comparisonOperator: "GREATER_THAN", threshold: 80, thresholdType: "PERCENTAGE" },
+            subscribers: [{ subscriptionType: "EMAIL", address: budgetEmail }],
+          },
+          {
+            notification: { notificationType: "FORECASTED", comparisonOperator: "GREATER_THAN", threshold: 100, thresholdType: "PERCENTAGE" },
+            subscribers: [{ subscriptionType: "EMAIL", address: budgetEmail }],
+          },
+        ],
+      });
+    }
 
     new CfnOutput(this, "ApiUrl", { value: httpApi.apiEndpoint });
     new CfnOutput(this, "ReceiptRuleSetName", { value: rules.receiptRuleSetName });
