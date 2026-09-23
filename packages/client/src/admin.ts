@@ -3,8 +3,14 @@
 // index.ts — the agent-facing MCP server depends on that library surface and
 // must never gain access to the admin key. The CLI imports this module
 // directly.
+//
+// The on-disk fallback (~/.config/agent-identity/admin_key) lives in the same
+// profile dir agent sessions read and write, so any agent running as the same
+// OS user can read it — mode/ownership checks on read only catch broader
+// exposure. On machines that run agent sessions, prefer AGENT_IDENTITY_ADMIN_KEY
+// in an operator-only shell, or a separate operator OS user.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { linkGithub, listPool, unlinkGithub, type GithubLink } from "./claims.js";
 import { defaultProfileDir } from "./profile.js";
@@ -13,17 +19,31 @@ export const adminKeyPath = (base: string = defaultProfileDir()): string =>
   join(base, "admin_key");
 
 export function readAdminKeyFile(base?: string): string | undefined {
+  const path = adminKeyPath(base);
+  let raw: string;
   try {
-    const key = readFileSync(adminKeyPath(base), "utf8").trim();
-    return key || undefined;
+    raw = readFileSync(path, "utf8");
   } catch {
     return undefined;
   }
+  const stat = statSync(path);
+  if (stat.mode & 0o077) {
+    throw new Error(
+      `${path} is group/world-accessible (mode ${(stat.mode & 0o777).toString(8)}); run: chmod 600 ${path}`,
+    );
+  }
+  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+    throw new Error(`${path} is not owned by the current user; refusing to use it`);
+  }
+  const key = raw.trim();
+  return key || undefined;
 }
 
 export function writeAdminKeyFile(key: string, base: string = defaultProfileDir()): void {
   mkdirSync(base, { recursive: true });
   writeFileSync(adminKeyPath(base), `${key.trim()}\n`, { mode: 0o600 });
+  // writeFileSync's mode only applies on creation; enforce it on overwrite too.
+  chmodSync(adminKeyPath(base), 0o600);
 }
 
 export function resolveAdminKey(
@@ -31,6 +51,29 @@ export function resolveAdminKey(
   base?: string,
 ): string | undefined {
   return env || readAdminKeyFile(base);
+}
+
+export interface ResolveAdminApiUrlOptions {
+  flagUrl?: string;
+  envUrl?: string;
+  configUrl?: string;
+  confirm: (url: string) => Promise<boolean>;
+}
+
+// --api-url and the operator's shell env are operator-stated; the machine
+// config lives in the agent-writable profile dir, where a tampered apiUrl
+// would exfiltrate the admin key on the next admin call — so a config-sourced
+// URL must be confirmed by the operator before the key is sent anywhere.
+export async function resolveAdminApiUrl(opts: ResolveAdminApiUrlOptions): Promise<string> {
+  if (opts.flagUrl) return opts.flagUrl;
+  if (opts.envUrl) return opts.envUrl;
+  if (!opts.configUrl) throw new Error("no API URL (pass --api-url or run: agent-identity setup)");
+  if (!(await opts.confirm(opts.configUrl))) {
+    throw new Error(
+      `refused to send the admin key to ${opts.configUrl} (machine config may be tampered; pass --api-url to state the URL explicitly)`,
+    );
+  }
+  return opts.configUrl;
 }
 
 export interface CapabilityCallOptions {

@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  adminKeyPath, disableGithub, enableGithub, readAdminKeyFile, resolveAdminKey, writeAdminKeyFile,
+  adminKeyPath, disableGithub, enableGithub, readAdminKeyFile, resolveAdminApiUrl,
+  resolveAdminKey, writeAdminKeyFile,
 } from "./admin.js";
 import { poolDir, savePoolProfile, type PoolProfile } from "./claims.js";
 
@@ -37,6 +38,61 @@ describe("admin key file", () => {
     expect(readAdminKeyFile(dir)).toBeUndefined();
     writeAdminKeyFile("", dir);
     expect(readAdminKeyFile(dir)).toBeUndefined();
+  });
+
+  it("refuses a group/world-accessible key file", () => {
+    const dir = base();
+    writeAdminKeyFile("adm-123", dir);
+    chmodSync(adminKeyPath(dir), 0o644);
+    expect(() => readAdminKeyFile(dir)).toThrow(/chmod 600/);
+  });
+
+  it("restores mode 600 when overwriting a looser-mode file", () => {
+    const dir = base();
+    writeAdminKeyFile("adm-123", dir);
+    chmodSync(adminKeyPath(dir), 0o644);
+    writeAdminKeyFile("adm-456", dir);
+    expect(statSync(adminKeyPath(dir)).mode & 0o777).toBe(0o600);
+    expect(readAdminKeyFile(dir)).toBe("adm-456");
+  });
+});
+
+describe("resolveAdminApiUrl", () => {
+  const confirmSpy = (answer: boolean) => vi.fn(async () => answer);
+
+  it("uses an operator-typed --api-url without confirmation", async () => {
+    const confirm = confirmSpy(false);
+    await expect(resolveAdminApiUrl({
+      flagUrl: "https://flag.example", envUrl: "https://env.example",
+      configUrl: "https://config.example", confirm,
+    })).resolves.toBe("https://flag.example");
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("uses the operator shell env before the agent-writable machine config", async () => {
+    const confirm = confirmSpy(false);
+    await expect(resolveAdminApiUrl({
+      envUrl: "https://env.example", configUrl: "https://config.example", confirm,
+    })).resolves.toBe("https://env.example");
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("requires confirmation for a machine-config apiUrl", async () => {
+    const confirm = confirmSpy(true);
+    await expect(resolveAdminApiUrl({ configUrl: "https://config.example", confirm }))
+      .resolves.toBe("https://config.example");
+    expect(confirm).toHaveBeenCalledWith("https://config.example");
+  });
+
+  it("refuses a declined machine-config apiUrl", async () => {
+    await expect(resolveAdminApiUrl({ configUrl: "https://evil.example", confirm: confirmSpy(false) }))
+      .rejects.toThrow(/refused to send the admin key to https:\/\/evil\.example/);
+  });
+
+  it("fails without any apiUrl before asking anything", async () => {
+    const confirm = confirmSpy(true);
+    await expect(resolveAdminApiUrl({ confirm })).rejects.toThrow(/no API URL/);
+    expect(confirm).not.toHaveBeenCalled();
   });
 });
 

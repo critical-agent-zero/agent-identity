@@ -32,6 +32,8 @@ program.command("admin-key")
     console.log(key);
     console.log("Operator-only: put it in AGENT_IDENTITY_ADMIN_KEY or ~/.config/agent-identity/admin_key (0600).");
     console.log("Never export it into an agent session env — it grants capability admin over every identity.");
+    console.log("Note: agent sessions running as the same OS user can read that file (0600 does not stop them).");
+    console.log("On machines that run agents, prefer the env var in an operator-only shell or a separate operator OS user.");
   });
 
 const agent = program.command("agent");
