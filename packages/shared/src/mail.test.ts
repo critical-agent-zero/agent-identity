@@ -95,6 +95,16 @@ describe("sanitizeMailText", () => {
       .toBe("xyzwv");
   });
 
+  it("strips soft hyphen, CGJ, Mongolian vowel separator, variation selectors, and tag characters", () => {
+    // Soft hyphen is the live attack: it renders invisibly inside a mailbox
+    // localpart, so `4<SHY>82913@…` displays as the intact address while
+    // defeating any literal-match redaction. The rest are the same class.
+    expect(sanitizeMailText(
+      "4" + cp(0x00ad) + "8" + cp(0x034f) + "2" + cp(0x180e) + "9" +
+      cp(0xfe0f) + "1" + cp(0xe0041) + "3" + cp(0xe0101) + "@d",
+    )).toBe("482913@d");
+  });
+
   it("leaves ordinary unicode text alone", () => {
     const plain = "hello world " + cp(0xe9, 0x2014, 0x65e5) + NL + TAB + "ok";
     expect(sanitizeMailText(plain)).toBe(plain);
