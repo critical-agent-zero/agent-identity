@@ -1,7 +1,8 @@
 import type { AgentRecord, NoncesRepo } from "@agent-identity/api";
 import {
   canonicalString, generateKeypair, sign,
-  type ActivityEvent, type CommitSpec, type PrSpec, type RepoRef, type RepoVisibility,
+  type ActivityEvent, type BlobSpec, type CommitChangesSpec, type CommitSpec,
+  type PrSpec, type RepoRef, type RepoVisibility,
 } from "@agent-identity/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createProxyApp, type ProxyDeps } from "./app.js";
@@ -43,6 +44,16 @@ export class FakeForge implements Forge {
   }
   async createCommit(ref: RepoRef, spec: CommitSpec, actor: Author) {
     this.calls.push(["createCommit", ref, spec, actor]);
+    if (this.failWith) throw this.failWith;
+    return { sha: "c1", url: "https://forge/c1" };
+  }
+  async putBlob(ref: RepoRef, spec: BlobSpec, actor: Author) {
+    this.calls.push(["putBlob", ref, spec, actor]);
+    if (this.failWith) throw this.failWith;
+    return { sha: "blob1" };
+  }
+  async commitChanges(ref: RepoRef, spec: CommitChangesSpec, actor: Author) {
+    this.calls.push(["commitChanges", ref, spec, actor]);
     if (this.failWith) throw this.failWith;
     return { sha: "c1", url: "https://forge/c1" };
   }
@@ -200,6 +211,145 @@ describe("POST /forge/:service/commit", () => {
       agentId: "482913", service: "github", op: "commit",
       owner: "critical-labs", repo: "agent-identity", outcome: "ok",
     }));
+  });
+});
+
+describe("POST /forge/:service/blob", () => {
+  const path = "/forge/github/blob";
+
+  it("uploads a blob via the adapter with the actor and returns the sha", async () => {
+    const { deps, forge } = makeDeps();
+    const app = createProxyApp(deps);
+    const body = JSON.stringify({ owner: "fork-acct", repo: "r", contentBase64: "QUJD" });
+    const res = await app.request(path, { ...signed("POST", path, body), body });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ sha: "blob1" });
+    expect(forge.calls[0]).toEqual([
+      "putBlob", { owner: "fork-acct", name: "r" }, { contentBase64: "QUJD" },
+      { name: "482913", email: "482913@agents.example" },
+    ]);
+  });
+
+  it("400s a blob request missing contentBase64, writing nothing", async () => {
+    const { deps, forge } = makeDeps();
+    const app = createProxyApp(deps);
+    const body = JSON.stringify({ owner: "o", repo: "r" });
+    const res = await app.request(path, { ...signed("POST", path, body), body });
+    expect(res.status).toBe(400);
+    expect(forge.calls).toHaveLength(0);
+  });
+
+  it("400s a blob whose repo dot-segments out of the namespace, writing nothing", async () => {
+    const { deps, forge } = makeDeps();
+    const app = createProxyApp(deps);
+    const body = JSON.stringify({
+      owner: "fork-acct", repo: "proxy/../../critical-labs/agent-identity", contentBase64: "QQ==",
+    });
+    const res = await app.request(path, { ...signed("POST", path, body), body });
+    expect(res.status).toBe(400);
+    expect(forge.calls).toHaveLength(0);
+  });
+
+  it("a fork-namespace policy denial creates NOTHING (no putBlob call)", async () => {
+    const { deps, forge } = makeDeps({
+      policy: forkNamespacePolicy({ githubForkOwner: "fork-acct" }),
+    });
+    const app = createProxyApp(deps);
+    const body = JSON.stringify({ owner: "critical-labs", repo: "agent-identity", contentBase64: "QQ==" });
+    const res = await app.request(path, { ...signed("POST", path, body), body });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe("denied");
+    expect(forge.calls.some((c) => c[0] === "putBlob")).toBe(false);
+  });
+});
+
+describe("POST /forge/:service/commit-changes", () => {
+  const path = "/forge/github/commit-changes";
+  const body = JSON.stringify({
+    owner: "fork-acct", repo: "agent-identity", branch: "feat-x", message: "feat: big",
+    changes: [
+      { path: "add.bin", blobSha: "b1" },
+      { path: "keep.txt", content: "x" },
+      { path: "gone.txt", deleted: true },
+    ],
+  });
+
+  it("calls commitChanges with the actor as forced author", async () => {
+    const { deps, forge } = makeDeps();
+    const app = createProxyApp(deps);
+    const res = await app.request(path, { ...signed("POST", path, body), body });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ sha: "c1", url: "https://forge/c1" });
+    const [name, ref, spec, actor] = forge.calls[0]!;
+    expect(name).toBe("commitChanges");
+    expect(ref).toEqual({ owner: "fork-acct", name: "agent-identity" });
+    expect(spec).toEqual({
+      branch: "feat-x", message: "feat: big",
+      changes: [
+        { path: "add.bin", blobSha: "b1" },
+        { path: "keep.txt", content: "x" },
+        { path: "gone.txt", deleted: true },
+      ],
+    });
+    expect(actor).toEqual({ name: "482913", email: "482913@agents.example" });
+  });
+
+  it("ignores any author smuggled into the body", async () => {
+    const smuggled = JSON.stringify({
+      owner: "fork-acct", repo: "r", branch: "b", message: "m",
+      changes: [{ path: "f", blobSha: "b1" }],
+      author: { name: "mallory", email: "mallory@evil" },
+    });
+    const { deps, forge } = makeDeps();
+    const app = createProxyApp(deps);
+    await app.request(path, { ...signed("POST", path, smuggled), body: smuggled });
+    const [, , , actor] = forge.calls[0]!;
+    expect(actor).toEqual({ name: "482913", email: "482913@agents.example" });
+  });
+
+  it("400s an empty or malformed changes set, writing nothing", async () => {
+    const { deps, forge } = makeDeps();
+    const app = createProxyApp(deps);
+    for (const bad of [
+      { owner: "o", repo: "r", branch: "b", message: "m", changes: [] },
+      { owner: "o", repo: "r", branch: "b", message: "m", changes: [{ path: "f" }] },
+      { owner: "o", repo: "r", branch: "b", message: "m" },
+    ]) {
+      const bb = JSON.stringify(bad);
+      const res = await app.request(path, { ...signed("POST", path, bb), body: bb });
+      expect(res.status).toBe(400);
+    }
+    expect(forge.calls).toHaveLength(0);
+  });
+
+  it("writes an attested forge_commit event with the visibility stamp", async () => {
+    const ledger = new FakeLedger();
+    const { deps } = makeDeps({ activity: ledger });
+    const app = createProxyApp(deps);
+    const res = await app.request(path, { ...signed("POST", path, body), body });
+    expect(res.status).toBe(200);
+    expect(ledger.events).toHaveLength(1);
+    expect(ledger.events[0]).toEqual(expect.objectContaining({
+      class: "attested", type: "forge_commit",
+      detail: expect.objectContaining({
+        repo: "fork-acct/agent-identity", branch: "feat-x", sha: "c1", visibility: "public",
+      }),
+      ref: "https://forge/c1",
+    }));
+  });
+
+  it("a fork-namespace policy denial creates NOTHING (no commitChanges call)", async () => {
+    const { deps, forge } = makeDeps({
+      policy: forkNamespacePolicy({ githubForkOwner: "fork-acct" }),
+    });
+    const app = createProxyApp(deps);
+    const offBody = JSON.stringify({
+      owner: "critical-labs", repo: "agent-identity", branch: "b", message: "m",
+      changes: [{ path: "f", blobSha: "b1" }],
+    });
+    const res = await app.request(path, { ...signed("POST", path, offBody), body: offBody });
+    expect(res.status).toBe(403);
+    expect(forge.calls.some((c) => c[0] === "commitChanges")).toBe(false);
   });
 });
 

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ClaimManager } from "./claim-manager.js";
-import { makeTools } from "./tools.js";
+import { makeTools, type ForgeEnv } from "./tools.js";
+import { SandboxError } from "./sandbox.js";
 
 function makeClient(over: Record<string, unknown> = {}) {
   return {
@@ -349,5 +350,209 @@ describe("forge tools", () => {
     const tools = makeTools(managerWith({ setStatus: boom, reportTaskNote: boom }));
     expect(await tools.setStatus({ state: "working" })).toEqual({ error: "API 400: only claimed event types" });
     expect(await tools.reportActivity({ note: "n" })).toEqual({ error: "API 400: only claimed event types" });
+  });
+});
+
+// #118: size-agnostic delivery. The MCP server reads bytes from disk (never
+// through the model), sandboxed, and streams them as blobs + one commit.
+describe("forge_commit disk-read + streaming (#118)", () => {
+  function managerWith(client: Record<string, unknown>): ClaimManager {
+    return { client: () => client } as never;
+  }
+  const b64 = (s: string) => Buffer.from(s).toString("base64");
+  function env(over: Partial<ForgeEnv> = {}): ForgeEnv {
+    return {
+      cwd: () => "/repo",
+      readFile: vi.fn(async (p: string) => Buffer.from(`BYTES(${p})`)),
+      resolvePath: vi.fn((root: string, target: string) => `${root}/${target}`),
+      git: vi.fn(async () => ""),
+      ...over,
+    };
+  }
+
+  it("keeps the small all-inline path on the original /commit route", async () => {
+    const forgeCommit = vi.fn(async () => ({ sha: "c1", url: "u" }));
+    const forgeCommitChanges = vi.fn();
+    const tools = makeTools(managerWith({ forgeCommit, forgeCommitChanges }), env());
+    await tools.forgeCommit({
+      owner: "fork", repo: "r", branch: "b", message: "m",
+      files: [{ path: "a", content: "x" }],
+    });
+    expect(forgeCommit).toHaveBeenCalled();
+    expect(forgeCommitChanges).not.toHaveBeenCalled();
+  });
+
+  it("reads a contentPath from disk (sandboxed), uploads a blob, and commits the blob sha (github)", async () => {
+    const forgePutBlob = vi.fn(async () => ({ sha: "blobX" }));
+    const forgeCommitChanges = vi.fn(async () => ({ sha: "c1", url: "u" }));
+    const e = env();
+    const tools = makeTools(managerWith({ forgePutBlob, forgeCommitChanges }), e);
+    const res = await tools.forgeCommit({
+      owner: "fork", repo: "r", branch: "feat", message: "m",
+      files: [
+        { path: "dist/app.js", contentPath: "build/app.js" },
+        { path: "keep.txt", content: "inline" },
+        { path: "old.txt", deleted: true },
+      ],
+    });
+    expect(res).toEqual({ sha: "c1", url: "u" });
+    // sandbox resolver invoked against the working dir for the disk read
+    expect(e.resolvePath).toHaveBeenCalledWith("/repo", "build/app.js");
+    expect(forgePutBlob).toHaveBeenCalledWith("github", { owner: "fork", name: "r" },
+      b64("BYTES(/repo/build/app.js)"));
+    expect(forgeCommitChanges).toHaveBeenCalledWith("github", { owner: "fork", name: "r" }, {
+      branch: "feat", message: "m",
+      changes: [
+        { path: "dist/app.js", blobSha: "blobX" },
+        { path: "keep.txt", content: "inline" },
+        { path: "old.txt", deleted: true },
+      ],
+    });
+  });
+
+  it("streams a contentPath as inline base64 for gitlab (no blob upload)", async () => {
+    const forgePutBlob = vi.fn();
+    const forgeCommitChanges = vi.fn(async () => ({ sha: "c1", url: "u" }));
+    const tools = makeTools(managerWith({ forgePutBlob, forgeCommitChanges }), env());
+    await tools.forgeCommit({
+      service: "gitlab", owner: "agent-1", repo: "r", branch: "b", message: "m",
+      files: [{ path: "a", contentPath: "src/a" }, { path: "b", content: "hi" }],
+    });
+    expect(forgePutBlob).not.toHaveBeenCalled();
+    expect(forgeCommitChanges).toHaveBeenCalledWith("gitlab", { owner: "agent-1", name: "r" }, {
+      branch: "b", message: "m",
+      changes: [
+        { path: "a", content: b64("BYTES(/repo/src/a)") },
+        { path: "b", content: b64("hi") },
+      ],
+    });
+  });
+
+  it("returns a clean error when a contentPath escapes the sandbox", async () => {
+    const forgeCommitChanges = vi.fn();
+    const e = env({
+      resolvePath: vi.fn(() => { throw new SandboxError("path escapes the sandbox root"); }),
+    });
+    const tools = makeTools(managerWith({ forgeCommitChanges }), e);
+    const res = await tools.forgeCommit({
+      owner: "fork", repo: "r", branch: "b", message: "m",
+      files: [{ path: "x", contentPath: "../../etc/passwd" }],
+    });
+    expect(res).toEqual({ error: expect.stringContaining("escapes the sandbox") });
+    expect(forgeCommitChanges).not.toHaveBeenCalled();
+  });
+});
+
+describe("forge_deliver (#118)", () => {
+  function managerWith(client: Record<string, unknown>): ClaimManager {
+    return { client: () => client } as never;
+  }
+  const b64 = (s: string) => Buffer.from(s).toString("base64");
+  function env(over: Partial<ForgeEnv> = {}): ForgeEnv {
+    return {
+      cwd: () => "/work",
+      readFile: vi.fn(async (p: string) => Buffer.from(`BYTES(${p})`)),
+      resolvePath: vi.fn((root: string, target: string) => `${root}/${target}`),
+      git: vi.fn(async () => ""),
+      ...over,
+    };
+  }
+  const gitWith = (isRepo: string, diff: string) =>
+    vi.fn(async (args: string[]) =>
+      args[0] === "rev-parse" ? isRepo : diff);
+
+  it("computes the A/M/D set from git diff and streams each into one commit (github)", async () => {
+    const forgePutBlob = vi.fn(async (_s, _r, _c) => ({ sha: `blob-${forgePutBlob.mock.calls.length}` }));
+    const forgeCommitChanges = vi.fn(async () => ({ sha: "c9", url: "https://forge/c9" }));
+    const git = gitWith("true\n",
+      "A\tadded.ts\nM\tchanged/mod.ts\nD\tremoved.ts\nT\ttypechg.ts\n");
+    const e = env({ git });
+    const tools = makeTools(managerWith({ forgePutBlob, forgeCommitChanges }), e);
+    const res = await tools.forgeDeliver({
+      owner: "fork", repo: "r", dir: "sub/worktree", base: "main", branch: "feat", message: "ship it",
+    });
+    expect(res).toEqual({ sha: "c9", url: "https://forge/c9" });
+    // dir resolved inside cwd; diff run against base..HEAD
+    expect(e.resolvePath).toHaveBeenCalledWith("/work", "sub/worktree");
+    expect(git).toHaveBeenCalledWith(
+      ["diff", "--name-status", "--no-renames", "main..HEAD"], "/work/sub/worktree");
+    // three files read (A, M, T), one delete
+    expect(forgePutBlob).toHaveBeenCalledTimes(3);
+    const [, ref, spec] = forgeCommitChanges.mock.calls[0] as unknown as [string, unknown, {
+      changes: unknown[];
+    }];
+    expect(ref).toEqual({ owner: "fork", name: "r" });
+    expect(spec.changes).toEqual([
+      { path: "added.ts", blobSha: "blob-1" },
+      { path: "changed/mod.ts", blobSha: "blob-2" },
+      { path: "removed.ts", deleted: true },
+      { path: "typechg.ts", blobSha: "blob-3" },
+    ]);
+    // the modified file's bytes were read from inside the resolved repo dir
+    expect(e.resolvePath).toHaveBeenCalledWith("/work/sub/worktree", "changed/mod.ts");
+    expect(e.readFile).toHaveBeenCalledWith("/work/sub/worktree/changed/mod.ts");
+  });
+
+  it("streams gitlab deliveries as inline base64 with no blob uploads", async () => {
+    const forgePutBlob = vi.fn();
+    const forgeCommitChanges = vi.fn(async () => ({ sha: "c1", url: "u" }));
+    const git = gitWith("true\n", "A\tnew.txt\nD\tgone.txt\n");
+    const tools = makeTools(managerWith({ forgePutBlob, forgeCommitChanges }), env({ git }));
+    await tools.forgeDeliver({
+      service: "gitlab", owner: "agent-1", repo: "r", dir: ".", base: "main", branch: "b", message: "m",
+    });
+    expect(forgePutBlob).not.toHaveBeenCalled();
+    const [, , spec] = forgeCommitChanges.mock.calls[0] as unknown as [string, unknown, {
+      changes: unknown[];
+    }];
+    expect(spec.changes).toEqual([
+      { path: "new.txt", content: b64("BYTES(/work/./new.txt)") },
+      { path: "gone.txt", deleted: true },
+    ]);
+  });
+
+  it("delivers a large change set as many blob uploads but a single commit", async () => {
+    const forgePutBlob = vi.fn(async () => ({ sha: "b" }));
+    const forgeCommitChanges = vi.fn(async () => ({ sha: "c1", url: "u" }));
+    const diff = Array.from({ length: 60 }, (_, i) => `A\tf${i}.bin`).join("\n") + "\n";
+    const tools = makeTools(managerWith({ forgePutBlob, forgeCommitChanges }),
+      env({ git: gitWith("true\n", diff) }));
+    await tools.forgeDeliver({
+      owner: "fork", repo: "r", dir: ".", base: "main", branch: "b", message: "m",
+    });
+    expect(forgePutBlob).toHaveBeenCalledTimes(60);
+    expect(forgeCommitChanges).toHaveBeenCalledTimes(1);
+  });
+
+  it("errors when dir is not a git repository, delivering nothing", async () => {
+    const forgeCommitChanges = vi.fn();
+    const tools = makeTools(managerWith({ forgeCommitChanges }),
+      env({ git: gitWith("false\n", "") }));
+    const res = await tools.forgeDeliver({
+      owner: "fork", repo: "r", dir: ".", base: "main", branch: "b", message: "m",
+    });
+    expect(res).toEqual({ error: expect.stringContaining("not a git repository") });
+    expect(forgeCommitChanges).not.toHaveBeenCalled();
+  });
+
+  it("errors when there are no changes between base and HEAD", async () => {
+    const forgeCommitChanges = vi.fn();
+    const tools = makeTools(managerWith({ forgeCommitChanges }),
+      env({ git: gitWith("true\n", "\n") }));
+    const res = await tools.forgeDeliver({
+      owner: "fork", repo: "r", dir: ".", base: "main", branch: "b", message: "m",
+    });
+    expect(res).toEqual({ error: expect.stringContaining("no changes") });
+    expect(forgeCommitChanges).not.toHaveBeenCalled();
+  });
+
+  it("returns a clean error when dir escapes the sandbox", async () => {
+    const tools = makeTools(managerWith({}), env({
+      resolvePath: vi.fn(() => { throw new SandboxError("path escapes the sandbox root"); }),
+    }));
+    const res = await tools.forgeDeliver({
+      owner: "fork", repo: "r", dir: "/etc", base: "main", branch: "b", message: "m",
+    });
+    expect(res).toEqual({ error: expect.stringContaining("escapes the sandbox") });
   });
 });

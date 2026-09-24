@@ -1,8 +1,46 @@
+import { execFile } from "node:child_process";
+import { readFile as fsReadFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import {
   isPinnedLink, matchesSenderDomain,
-  type AgentStatusState, type AgentStatusView, type EmailSummary,
+  type AgentStatusState, type AgentStatusView, type CommitChange, type EmailSummary, type RepoRef,
 } from "@agent-identity/shared";
 import type { ClaimManager, IdentityStatus } from "./claim-manager.js";
+import { resolveInside } from "./sandbox.js";
+
+const execFileP = promisify(execFile);
+
+/** Filesystem/git seam for the size-agnostic forge tools (#118). Injected so
+ *  tests drive them with fakes; production uses real disk + git. Every disk
+ *  read goes through `resolvePath` (the sandbox choke point) — nothing here
+ *  reads a path the resolver has not first proven is inside the root. */
+export interface ForgeEnv {
+  cwd: () => string;
+  readFile: (absPath: string) => Promise<Buffer>;
+  resolvePath: (root: string, target: string) => string;
+  git: (args: string[], cwd: string) => Promise<string>;
+}
+
+export const defaultForgeEnv: ForgeEnv = {
+  cwd: () => process.cwd(),
+  readFile: (p) => fsReadFile(p),
+  resolvePath: resolveInside,
+  git: async (args, cwd) => {
+    // 64MB cap: forge_deliver only reads `git diff --name-status`, whose
+    // output is a status + path per changed file, never file contents.
+    const { stdout } = await execFileP("git", args, { cwd, maxBuffer: 64 * 1024 * 1024 });
+    return stdout;
+  },
+};
+
+/** A file item accepted by forge_commit: small inline content, a repo-relative
+ *  path the server reads from disk (any size, binary-safe), or a deletion. */
+export interface ForgeCommitFile {
+  path: string;
+  content?: string;
+  contentPath?: string;
+  deleted?: boolean;
+}
 
 export interface WaitArgs {
   fromContains?: string;
@@ -29,7 +67,26 @@ const untrusted = <T extends object>(v: T): Untrusted<T> =>
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export function makeTools(manager: ClaimManager) {
+export function makeTools(manager: ClaimManager, env: ForgeEnv = defaultForgeEnv) {
+  // Turn one add/modify into a change. GitHub streams disk bytes through a
+  // blob (blobSha) so no single request carries the whole file; GitLab has no
+  // blob object and carries content inline, base64-encoded, in the commit.
+  const streamedAdd = async (
+    service: string, ref: RepoRef, path: string, base64: string,
+  ): Promise<CommitChange> => {
+    if (service === "github") {
+      const { sha } = await manager.client().forgePutBlob(service, ref, base64);
+      return { path, blobSha: sha };
+    }
+    return { path, content: base64 };
+  };
+  // Model-supplied inline content: GitHub takes it as UTF-8 tree content;
+  // GitLab needs it base64 like every other GitLab change.
+  const inlineAdd = (service: string, path: string, content: string): CommitChange =>
+    service === "github"
+      ? { path, content }
+      : { path, content: Buffer.from(content, "utf8").toString("base64") };
+
   return {
     ensureIdentity(args: { require?: string[] } = {}) {
       return manager.ensureIdentity(args.require);
@@ -177,12 +234,87 @@ export function makeTools(manager: ClaimManager) {
 
     async forgeCommit(args: {
       service?: string; owner: string; repo: string; branch: string;
-      message: string; files: { path: string; content: string }[];
+      message: string; files: ForgeCommitFile[];
     }) {
       try {
-        return await manager.client().forgeCommit(args.service ?? "github",
-          { owner: args.owner, name: args.repo },
-          { branch: args.branch, message: args.message, files: args.files });
+        const service = args.service ?? "github";
+        const ref: RepoRef = { owner: args.owner, name: args.repo };
+        // Small-path back-compat: an all-inline change still routes through the
+        // original /commit path, byte-for-byte the old behavior.
+        const allInline = args.files.every((f) =>
+          typeof f.content === "string" && f.contentPath === undefined && f.deleted !== true);
+        if (allInline) {
+          return await manager.client().forgeCommit(service, ref, {
+            branch: args.branch, message: args.message,
+            files: args.files.map((f) => ({ path: f.path, content: f.content as string })),
+          });
+        }
+        const changes: CommitChange[] = [];
+        for (const f of args.files) {
+          if (f.deleted === true) {
+            changes.push({ path: f.path, deleted: true });
+          } else if (typeof f.contentPath === "string") {
+            // Disk read — sandboxed to the process working directory.
+            const abs = env.resolvePath(env.cwd(), f.contentPath);
+            const base64 = (await env.readFile(abs)).toString("base64");
+            changes.push(await streamedAdd(service, ref, f.path, base64));
+          } else if (typeof f.content === "string") {
+            changes.push(inlineAdd(service, f.path, f.content));
+          } else {
+            return { error: `file "${f.path}" needs one of content, contentPath, or deleted:true` };
+          }
+        }
+        return await manager.client().forgeCommitChanges(service, ref, {
+          branch: args.branch, message: args.message, changes,
+        });
+      } catch (err) {
+        return { error: (err as Error).message };
+      }
+    },
+
+    // Deliver a local branch/worktree through the proxy, authored as this
+    // identity, at any size. Diffs base..HEAD in `dir`, streams each
+    // added/modified file's bytes (read from disk, sandboxed to cwd) and each
+    // deletion into ONE commit on the fork. owner/repo name the fork target
+    // the proxy's fork-namespace policy gates.
+    async forgeDeliver(args: {
+      service?: string; owner: string; repo: string;
+      dir: string; base: string; branch: string; message: string;
+    }) {
+      try {
+        const service = args.service ?? "github";
+        const ref: RepoRef = { owner: args.owner, name: args.repo };
+        // `dir` itself must resolve inside the working directory.
+        const realDir = env.resolvePath(env.cwd(), args.dir);
+        const inside = (await env.git(["rev-parse", "--is-inside-work-tree"], realDir)).trim();
+        if (inside !== "true") return { error: `not a git repository: ${args.dir}` };
+        // --no-renames so every path is a plain A/M/D/T we can read or delete;
+        // base..HEAD delivers the committed branch relative to base.
+        const out = await env.git(
+          ["diff", "--name-status", "--no-renames", `${args.base}..HEAD`], realDir);
+        const changes: CommitChange[] = [];
+        for (const line of out.split("\n")) {
+          if (!line.trim()) continue;
+          const tab = line.indexOf("\t");
+          if (tab === -1) continue;
+          const status = line.slice(0, tab);
+          const path = line.slice(tab + 1).trim();
+          if (!path) continue;
+          if (status.startsWith("D")) {
+            changes.push({ path, deleted: true });
+            continue;
+          }
+          // A / M / T: read the working-tree bytes, sandboxed to the repo dir.
+          const abs = env.resolvePath(realDir, path);
+          const base64 = (await env.readFile(abs)).toString("base64");
+          changes.push(await streamedAdd(service, ref, path, base64));
+        }
+        if (changes.length === 0) {
+          return { error: `no changes to deliver between ${args.base} and HEAD` };
+        }
+        return await manager.client().forgeCommitChanges(service, ref, {
+          branch: args.branch, message: args.message, changes,
+        });
       } catch (err) {
         return { error: (err as Error).message };
       }

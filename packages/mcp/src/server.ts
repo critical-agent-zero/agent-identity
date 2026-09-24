@@ -130,17 +130,39 @@ server.registerTool(
 server.registerTool(
   "forge_commit",
   {
-    description: "Create a commit on a branch via the forge proxy. Authorship is set server-side to this session's identity; the request carries no author.",
+    description: "Create a commit on a branch via the forge proxy. Authorship is set server-side to this session's identity; the request carries no author. Each file item is one of: {path, content} inline text (small changes); {path, contentPath} where contentPath is a repo-relative file the server reads from disk (any size, binary-safe, sandboxed to the working directory — no absolute paths, `..`, or symlink escapes); or {path, deleted:true}. For delivering a whole local branch or worktree, prefer forge_deliver.",
     inputSchema: {
       service: z.string().optional(),
       owner: z.string(),
       repo: z.string(),
       branch: z.string(),
       message: z.string(),
-      files: z.array(z.object({ path: z.string(), content: z.string() })),
+      files: z.array(z.object({
+        path: z.string(),
+        content: z.string().optional(),
+        contentPath: z.string().optional(),
+        deleted: z.boolean().optional(),
+      })),
     },
   },
   async (args) => json(await tools.forgeCommit(args)),
+);
+
+server.registerTool(
+  "forge_deliver",
+  {
+    description: "Deliver a local branch or worktree through the forge proxy as ONE commit authored as this session's identity, at any size. Diffs base..HEAD in `dir` (git diff --name-status), streams every added/modified file's bytes read from disk and every deletion into a single commit on owner/repo (the fork target the proxy's fork-namespace policy gates). Disk reads are sandboxed to the working directory (no absolute paths, `..`, or symlink escapes). Prefer this over forge_commit for real code changes. service defaults to github.",
+    inputSchema: {
+      service: z.string().optional(),
+      owner: z.string(),
+      repo: z.string(),
+      dir: z.string(),
+      base: z.string(),
+      branch: z.string(),
+      message: z.string(),
+    },
+  },
+  async (args) => json(await tools.forgeDeliver(args)),
 );
 
 server.registerTool(

@@ -57,6 +57,35 @@ export interface CommitSpec {
   files: ForgeFile[];
 }
 
+/** A single change in a size-agnostic (tree/actions-based) commit (#118).
+ *  Content never routes through the model as a whole file: the MCP server
+ *  reads bytes from disk, so an add/modify is delivered either as a
+ *  pre-uploaded blob (GitHub `blobSha`) or as inline `content`.
+ *  Field semantics are service-scoped because the commit route is
+ *  per-service: GitHub reads `content` as UTF-8 tree content (the small
+ *  model-supplied inline case) and streams disk files through `blobSha`;
+ *  GitLab always receives `content` base64-encoded (its commits API carries
+ *  content inline) and never `blobSha`. */
+export type CommitChange =
+  | { path: string; blobSha: string }
+  | { path: string; content: string }
+  | { path: string; deleted: true };
+
+export interface CommitChangesSpec {
+  branch: string;
+  message: string;
+  changes: CommitChange[];
+}
+
+/** Payload for the blob-upload port (#118): one file's bytes, base64. */
+export interface BlobSpec {
+  contentBase64: string;
+}
+
+export interface BlobResult {
+  sha: string;
+}
+
 export interface PrSpec {
   head: string;
   base: string;

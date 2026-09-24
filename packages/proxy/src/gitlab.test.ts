@@ -126,6 +126,60 @@ describe("GitlabForge.createCommit branch auto-create", () => {
   });
 });
 
+describe("GitlabForge.putBlob", () => {
+  it("is unsupported — content is carried inline via commitChanges", async () => {
+    const { fn, calls } = makeFetch({});
+    const forge = new GitlabForge({ credentials, fetch: fn });
+    await expect(forge.putBlob({ owner: "o", name: "r" }, { contentBase64: "QQ==" }, actor))
+      .rejects.toMatchObject({ kind: "invalid" });
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("GitlabForge.commitChanges", () => {
+  it("builds create/update/delete actions with base64 content and forces the author", async () => {
+    const { fn, calls } = makeFetch({
+      [`GET ${P}/repository/branches/main`]: { json: { name: "main" } },
+      [`GET ${P}/repository/files/exists.txt?ref=main`]: { json: { file_path: "exists.txt" } },
+      [`GET ${P}/repository/files/new.bin?ref=main`]: { status: 404, json: { message: "404" } },
+      [`POST ${P}/repository/commits`]: {
+        json: { id: "sha1", web_url: "https://gitlab.com/o/r/-/commit/sha1" },
+      },
+    });
+    const forge = new GitlabForge({ credentials, fetch: fn });
+    const result = await forge.commitChanges({ owner: "o", name: "r" }, {
+      branch: "main", message: "m",
+      changes: [
+        { path: "exists.txt", content: "QUJD" },
+        { path: "new.bin", content: "REVG" },
+        { path: "gone.txt", deleted: true },
+      ],
+    }, actor);
+    expect(result).toEqual({ sha: "sha1", url: "https://gitlab.com/o/r/-/commit/sha1" });
+    const commitCall = calls.find((c) => c.url === `${P}/repository/commits`)!;
+    expect(JSON.parse(commitCall.init.body as string)).toEqual({
+      branch: "main", commit_message: "m",
+      author_name: "482913", author_email: "482913@agents.example",
+      actions: [
+        { action: "update", file_path: "exists.txt", content: "QUJD", encoding: "base64" },
+        { action: "create", file_path: "new.bin", content: "REVG", encoding: "base64" },
+        { action: "delete", file_path: "gone.txt" },
+      ],
+    });
+  });
+
+  it("rejects a github-style blobSha change (gitlab has no blob object)", async () => {
+    const { fn } = makeFetch({
+      [`GET ${P}/repository/branches/main`]: { json: { name: "main" } },
+    });
+    const forge = new GitlabForge({ credentials, fetch: fn });
+    await expect(forge.commitChanges({ owner: "o", name: "r" }, {
+      branch: "main", message: "m",
+      changes: [{ path: "a", blobSha: "b1" } as never],
+    }, actor)).rejects.toMatchObject({ kind: "invalid" });
+  });
+});
+
 describe("GitlabForge.openPullRequest and comment", () => {
   it("opens an MR (iid becomes number)", async () => {
     const { fn, calls } = makeFetch({

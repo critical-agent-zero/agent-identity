@@ -1,7 +1,7 @@
 import {
   canonicalString, sign, type ActivityEvent, type AgentIdentity, type AgentStatusState,
-  type AgentStatusView, type CommentResult, type CommitResult,
-  type CommitSpec, type EmailFull, type EmailSummary, type ForgeProvisionResult,
+  type AgentStatusView, type BlobResult, type CommentResult, type CommitChangesSpec,
+  type CommitResult, type CommitSpec, type EmailFull, type EmailSummary, type ForgeProvisionResult,
   type ForkResult, type Keypair, type PrResult, type PrSpec,
   type RegisterResponse, type RepoInfo, type RepoRef,
 } from "@agent-identity/shared";
@@ -131,6 +131,20 @@ export class AgentIdentityClient {
 
   forgeCommit(service: string, ref: RepoRef, spec: CommitSpec): Promise<CommitResult> {
     return this.request("POST", `/forge/${service}/commit`,
+      JSON.stringify({ owner: ref.owner, repo: ref.name, ...spec }));
+  }
+
+  /** Upload one file's bytes as a blob (#118). Streaming path: one call per
+   *  file, so no single request carries the whole change. */
+  forgePutBlob(service: string, ref: RepoRef, contentBase64: string): Promise<BlobResult> {
+    return this.request("POST", `/forge/${service}/blob`,
+      JSON.stringify({ owner: ref.owner, repo: ref.name, contentBase64 }));
+  }
+
+  /** Size-agnostic commit (#118) over a set of changes (blob shas, inline
+   *  content, or deletions). Authorship is forced server-side. */
+  forgeCommitChanges(service: string, ref: RepoRef, spec: CommitChangesSpec): Promise<CommitResult> {
+    return this.request("POST", `/forge/${service}/commit-changes`,
       JSON.stringify({ owner: ref.owner, repo: ref.name, ...spec }));
   }
 

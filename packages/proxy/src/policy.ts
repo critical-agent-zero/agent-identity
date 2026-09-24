@@ -5,7 +5,7 @@ import { gitlabServiceAccountUsername } from "./gitlab-names.js";
  *  rules will pattern-match on. */
 export interface ForgeOp {
   service: string;
-  kind: "repo" | "commit" | "pr" | "comment" | "provision" | "fork";
+  kind: "repo" | "commit" | "blob" | "pr" | "comment" | "provision" | "fork";
   owner: string;
   repo: string;
 }
@@ -37,7 +37,10 @@ const deny = (expected: string, owner: string): PolicyDecision => ({
  *  config; GitHub uses one shared fork account, supplied via config. */
 export function forkNamespacePolicy(config: ForkPolicyConfig = {}): Policy {
   return (agent, op) => {
-    if (op.kind !== "commit") return { allow: true };
+    // Blob uploads are the first write in the streaming commit path (#118):
+    // they must be pinned to the fork namespace exactly like the commit, or a
+    // rejected target could still leave dangling objects in the source repo.
+    if (op.kind !== "commit" && op.kind !== "blob") return { allow: true };
     if (op.service === "gitlab") {
       const expected = gitlabServiceAccountUsername(agent.agentId);
       return op.owner === expected ? { allow: true } : deny(expected, op.owner);

@@ -3,7 +3,7 @@ import {
 } from "@agent-identity/api";
 import {
   sanitizeAttestedEvent,
-  type ActivityEvent, type RepoRef, type RepoVisibility,
+  type ActivityEvent, type CommitChange, type RepoRef, type RepoVisibility,
 } from "@agent-identity/shared";
 import type { Context } from "hono";
 import { Hono } from "hono";
@@ -161,6 +161,19 @@ export function createProxyApp(deps: ProxyDeps): Hono {
     Array.isArray(v) && v.length > 0 &&
     v.every((f) => isStr((f as { path?: unknown }).path) &&
       typeof (f as { content?: unknown }).content === "string");
+  // A change is A/M (a pre-uploaded blobSha OR inline content) or a deletion.
+  // File paths ride in the JSON body (tree entries / gitlab actions), never a
+  // URL path, so the #94 owner/repo/branch URL hardening does not apply to
+  // them; each need only be a non-empty string.
+  const isChanges = (v: unknown): boolean =>
+    Array.isArray(v) && v.length > 0 &&
+    v.every((c) => {
+      const o = c as Record<string, unknown>;
+      if (!isStr(o.path)) return false;
+      if (o.deleted === true) return true;
+      if (typeof o.blobSha === "string" && o.blobSha.length > 0) return true;
+      return typeof o.content === "string";
+    });
 
   app.post("/forge/:service/commit", async (c) => {
     const g = guard(c);
@@ -177,6 +190,57 @@ export function createProxyApp(deps: ProxyDeps): Hono {
       {
         branch: b.branch as string, message: b.message as string,
         files: b.files as { path: string; content: string }[],
+      },
+      g.actor,
+    ), async (r) => ({
+      type: "forge_commit",
+      summary: `committed to ${repo}@${b.branch}`,
+      detail: {
+        service: g.service, repo, branch: b.branch as string, sha: r.sha,
+        ...(await visibilityStamp(g, [{ owner: b.owner as string, name: b.repo as string }])),
+      },
+      ref: r.url,
+    }));
+  });
+
+  // Streaming blob upload (#118), the first write of the size-agnostic commit
+  // path. Same signature auth + capability guard as every forge route, and —
+  // crucially — the SAME policy gate: op.kind "blob" is fork-namespace-pinned
+  // (see policy.ts), so a rejected target creates NOTHING, blobs included.
+  app.post("/forge/:service/blob", async (c) => {
+    const g = guard(c);
+    if (g instanceof Response) return g;
+    const b = await c.req.json().catch(() => undefined) as Record<string, unknown> | undefined;
+    if (!b || !isName(b.owner) || !isName(b.repo) || !isStr(b.contentBase64)) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const op: ForgeOp = { service: g.service, kind: "blob", owner: b.owner, repo: b.repo };
+    return run(c, g, op, () => g.forge.putBlob(
+      { owner: b.owner as string, name: b.repo as string },
+      { contentBase64: b.contentBase64 as string },
+      g.actor,
+    ));
+  });
+
+  // Size-agnostic commit (#118): a set of changes (blob shas, inline content,
+  // or deletions) rather than whole-file inline content. Same validation and
+  // attestation as /commit; the fork-namespace pin (op.kind "commit") gates it
+  // BEFORE any write.
+  app.post("/forge/:service/commit-changes", async (c) => {
+    const g = guard(c);
+    if (g instanceof Response) return g;
+    const b = await c.req.json().catch(() => undefined) as Record<string, unknown> | undefined;
+    if (!b || !isName(b.owner) || !isName(b.repo) || !isBranch(b.branch)
+      || !isStr(b.message) || !isChanges(b.changes)) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const op: ForgeOp = { service: g.service, kind: "commit", owner: b.owner, repo: b.repo };
+    const repo = `${b.owner}/${b.repo}`;
+    return run(c, g, op, () => g.forge.commitChanges(
+      { owner: b.owner as string, name: b.repo as string },
+      {
+        branch: b.branch as string, message: b.message as string,
+        changes: b.changes as CommitChange[],
       },
       g.actor,
     ), async (r) => ({

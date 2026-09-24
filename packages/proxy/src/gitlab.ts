@@ -1,5 +1,6 @@
 import type {
-  CommentResult, CommitResult, CommitSpec, ForkResult, PrResult, PrSpec, RepoInfo, RepoRef,
+  BlobResult, BlobSpec, CommentResult, CommitChangesSpec, CommitResult, CommitSpec,
+  ForkResult, PrResult, PrSpec, RepoInfo, RepoRef,
   RepoVisibility,
 } from "@agent-identity/shared";
 import {
@@ -105,21 +106,72 @@ export class GitlabForge implements Forge {
     }
   }
 
-  async createCommit(ref: RepoRef, spec: CommitSpec, actor: Author): Promise<CommitResult> {
-    const p = this.project(ref);
-    await this.ensureBranch(p, spec.branch, actor.name);
-    const actions = [];
-    for (const f of spec.files) {
-      const exists = await this.fileExists(p, f.path, spec.branch, actor.name);
-      actions.push({ action: exists ? "update" : "create", file_path: f.path, content: f.content });
-    }
+  /** Post the commit with authorship FORCED to the acting identity. The
+   *  namespace pin (fork-namespace policy) and app-layer validation run in
+   *  the proxy BEFORE this adapter is reached, so a rejected target writes
+   *  nothing. */
+  private async postCommit(
+    p: string, branch: string, message: string,
+    actions: Record<string, unknown>[], actor: Author,
+  ): Promise<CommitResult> {
     const commit = await this.gl<{ id: string; web_url: string }>(
       "POST", `/projects/${p}/repository/commits`, actor.name, {
-        branch: spec.branch, commit_message: spec.message,
+        branch, commit_message: message,
         author_name: actor.name, author_email: actor.email,
         actions,
       });
     return { sha: commit.id, url: commit.web_url };
+  }
+
+  async createCommit(ref: RepoRef, spec: CommitSpec, actor: Author): Promise<CommitResult> {
+    const p = this.project(ref);
+    await this.ensureBranch(p, spec.branch, actor.name);
+    const actions: Record<string, unknown>[] = [];
+    for (const f of spec.files) {
+      const exists = await this.fileExists(p, f.path, spec.branch, actor.name);
+      actions.push({ action: exists ? "update" : "create", file_path: f.path, content: f.content });
+    }
+    return this.postCommit(p, spec.branch, spec.message, actions, actor);
+  }
+
+  /** GitLab's commits API carries content inline, so there is no separate
+   *  blob object to upload; the MCP server passes content base64-encoded in
+   *  commitChanges instead. Made explicit rather than a silent no-op so a
+   *  mis-routed GitHub-style blob upload fails loudly. */
+  async putBlob(_ref: RepoRef, _spec: BlobSpec, _actor: Author): Promise<BlobResult> {
+    throw new ForgeError(
+      "invalid",
+      "gitlab does not support blob upload; content is carried inline via commitChanges",
+      400);
+  }
+
+  /** Size-agnostic commit via the commits API actions array (#118). Each
+   *  add/modify carries base64 `content` (encoding:"base64"); create vs
+   *  update is probed per file exactly as createCommit; a deletion is a
+   *  "delete" action. NOTE: GitLab enforces a per-commit payload size limit
+   *  (the whole change travels in one request), so very large deliveries can
+   *  exceed it — GitHub's per-file blob streaming has no such ceiling. */
+  async commitChanges(ref: RepoRef, spec: CommitChangesSpec, actor: Author): Promise<CommitResult> {
+    const p = this.project(ref);
+    await this.ensureBranch(p, spec.branch, actor.name);
+    const actions: Record<string, unknown>[] = [];
+    for (const c of spec.changes) {
+      if ("deleted" in c) {
+        actions.push({ action: "delete", file_path: c.path });
+        continue;
+      }
+      if ("blobSha" in c) {
+        throw new ForgeError(
+          "invalid",
+          "gitlab commits carry content inline; blob references are not supported", 400);
+      }
+      const exists = await this.fileExists(p, c.path, spec.branch, actor.name);
+      actions.push({
+        action: exists ? "update" : "create",
+        file_path: c.path, content: c.content, encoding: "base64",
+      });
+    }
+    return this.postCommit(p, spec.branch, spec.message, actions, actor);
   }
 
   async openPullRequest(ref: RepoRef, spec: PrSpec, actor: Author): Promise<PrResult> {

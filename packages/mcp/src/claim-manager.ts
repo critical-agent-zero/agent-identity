@@ -5,7 +5,7 @@ import {
 } from "@agent-identity/client";
 import {
   generateKeypair, type ActivityEvent, type AgentIdentity, type AgentStatusState,
-  type CommentResult, type CommitResult,
+  type BlobResult, type CommentResult, type CommitChangesSpec, type CommitResult,
   type CommitSpec, type EmailFull, type EmailSummary, type ForgeProvisionResult,
   type ForkResult, type Keypair, type PrResult, type PrSpec,
   type RegisterResponse, type RepoInfo, type RepoRef,
@@ -23,6 +23,8 @@ export interface AgentClientLike {
   getEmail(id: string): Promise<EmailFull>;
   forgeRepo(service: string, ref: RepoRef): Promise<RepoInfo>;
   forgeCommit(service: string, ref: RepoRef, spec: CommitSpec): Promise<CommitResult>;
+  forgePutBlob(service: string, ref: RepoRef, contentBase64: string): Promise<BlobResult>;
+  forgeCommitChanges(service: string, ref: RepoRef, spec: CommitChangesSpec): Promise<CommitResult>;
   forgeOpenPr(service: string, ref: RepoRef, spec: PrSpec): Promise<PrResult>;
   forgeComment(service: string, ref: RepoRef, issue: number, body: string): Promise<CommentResult>;
   forgeFork(service: string, ref: RepoRef): Promise<ForkResult>;

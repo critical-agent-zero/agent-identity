@@ -57,4 +57,27 @@ describe("forkNamespacePolicy", () => {
     expect(p(gh, { service: "github", kind: "pr", owner: "critical-labs", repo: "r" })).toEqual({ allow: true });
     expect(p(gh, { service: "github", kind: "comment", owner: "critical-labs", repo: "r" })).toEqual({ allow: true });
   });
+
+  // #118: a blob upload is the FIRST write of the streaming commit path, so it
+  // must be fork-namespace-pinned exactly like the commit — a blob into the
+  // source repo is refused before any object is created.
+  it("pins github blob uploads to the fork owner, like commits", () => {
+    const p = forkNamespacePolicy({ githubForkOwner: "critical-agent-zero" });
+    expect(p(gh, { service: "github", kind: "blob", owner: "critical-labs", repo: "agent-identity" }))
+      .toEqual({ allow: false, reason: expect.stringContaining("critical-agent-zero") });
+    expect(p(gh, { service: "github", kind: "blob", owner: "critical-agent-zero", repo: "agent-identity" }))
+      .toEqual({ allow: true });
+  });
+
+  it("fails CLOSED on a github blob when no fork owner is configured", () => {
+    const p = forkNamespacePolicy();
+    expect(p(gh, { service: "github", kind: "blob", owner: "anyone", repo: "r" }).allow).toBe(false);
+  });
+
+  it("pins gitlab blob uploads to agent-<id>", () => {
+    const p = forkNamespacePolicy();
+    expect(p(gl, { service: "gitlab", kind: "blob", owner: "someone-else", repo: "r" }).allow).toBe(false);
+    expect(p(gl, { service: "gitlab", kind: "blob", owner: "agent-482913", repo: "r" }))
+      .toEqual({ allow: true });
+  });
 });
