@@ -1,0 +1,38 @@
+name: public-leak-canary
+
+# Probes the LIVE public fleet endpoints for operator-defined private
+# patterns (repo names, branch fragments — themselves sensitive, so they
+# live in the PRIVATE_PATTERNS secret, newline- or comma-separated, and
+# are masked before any comparison). Any hit fails the run loudly.
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe public endpoints for private patterns
+        env:
+          API_URL: ${{ vars.FLEET_PUBLIC_API_URL }}
+          PATTERNS: ${{ secrets.PRIVATE_PATTERNS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${API_URL:-}" ] || [ -z "${PATTERNS:-}" ]; then
+            echo "FLEET_PUBLIC_API_URL var and PRIVATE_PATTERNS secret must be set"; exit 1
+          fi
+          body="$(curl -sf "$API_URL/fleet/public/activity?limit=100")$(curl -sf "$API_URL/fleet/public/agents")"
+          leak=0
+          # normalize separators to newlines; mask each pattern before use
+          printf '%s' "$PATTERNS" | tr ',' '\n' | while IFS= read -r pat; do
+            pat="$(printf '%s' "$pat" | xargs)"; [ -z "$pat" ] && continue
+            echo "::add-mask::$pat"
+            if printf '%s' "$body" | grep -qiF -- "$pat"; then
+              echo "::error::PUBLIC LEAK: a private pattern appears in the public fleet feed"
+              exit 9
+            fi
+          done
+          echo "canary clean: $(printf '%s' "$body" | wc -c) bytes checked"
