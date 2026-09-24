@@ -326,7 +326,9 @@ describe("attested email_received events", () => {
 
   it("writes an attested event carrying ONLY the sender domain on authenticated delivery", async () => {
     const { deps, putEvent } = withLedger();
-    await processRecord(sesRecord({ dkimVerdict: { status: "PASS" } }) as never, deps);
+    // DMARC PASS is the only verdict that binds the signature to the From
+    // domain, so attested provenance is written only on DMARC PASS (issue #114).
+    await processRecord(sesRecord({ dmarcVerdict: { status: "PASS" } }) as never, deps);
     expect(putEvent).toHaveBeenCalledTimes(1);
     const event = putEvent.mock.calls[0][0];
     expect(event).toEqual(expect.objectContaining({
@@ -376,7 +378,7 @@ describe("attested email_received events", () => {
     const putEvent = vi.fn(async () => { throw new Error("ddb down"); });
     const deps: IngestDeps = { ...makeDeps(), activity: { putEvent } };
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const record = sesRecord({ dkimVerdict: { status: "PASS" } });
+    const record = sesRecord({ dmarcVerdict: { status: "PASS" } });
     await expect(processRecord(record as never, deps)).resolves.toBeUndefined();
     expect(deps.emails.putEmail).toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalled();

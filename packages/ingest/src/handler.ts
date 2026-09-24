@@ -89,7 +89,10 @@ async function deliverToAgent(
     ...(ctx.auth ? { auth: ctx.auth } : {}),
     ...(unsolicited ? { unsolicited: true } : {}),
   });
-  const senderAuthenticated = ctx.auth?.dkim === "PASS" || ctx.auth?.dmarc === "PASS";
+  // DMARC PASS is the ONLY SES verdict that binds the authenticated identifier
+  // to the From domain; SES exposes no d= domain, so bare DKIM PASS cannot be
+  // validated against From and must not mint attested provenance (issue #114).
+  const senderAuthenticated = ctx.auth?.dmarc === "PASS";
   if (!unsolicited && senderAuthenticated) {
     const domain = senderDomain(parsed.from);
     if (domain) {
@@ -106,8 +109,13 @@ async function deliverToAgent(
 // always-live orchestration agent ACTS on this mail, so delivery is
 // FAIL-CLOSED: store the message only when BOTH the sender matches the
 // mailbox allowlist (hardened address / *@domain matching, never the display
-// name) AND authentication positively passed (DKIM or DMARC PASS — SPF alone
-// is a spoofable envelope and is insufficient). Anything else is DROPPED to
+// name) AND authentication positively passed. Authentication here means DMARC
+// PASS — the only SES verdict that binds the authenticated identifier to the
+// From domain the allowlist is matched against. SPF PASS only authenticates the
+// envelope (spoofable), and bare DKIM PASS only means SOME d= domain signed the
+// message — SES exposes no d= value, so a DKIM PASS cannot be validated against
+// the From header (an attacker signs with their own domain while forging an
+// allowlisted From). Anything else is DROPPED to
 // quarantine (never the mailbox) with an attested email_rejected event that
 // carries the sender domain and a reason enum alone — never subject, body, or
 // full address.
@@ -115,7 +123,7 @@ async function deliverToMailbox(
   deps: IngestDeps, mailbox: AgentRecord, parsed: ParsedEmail, ctx: DeliveryContext,
 ): Promise<void> {
   const allowlisted = matchesMailboxAllowlist(parsed.from, mailbox.allowlist ?? []);
-  const authenticated = ctx.auth?.dkim === "PASS" || ctx.auth?.dmarc === "PASS";
+  const authenticated = ctx.auth?.dmarc === "PASS";
   if (!allowlisted || !authenticated) {
     await deps.quarantineRaw(ctx.messageId);
     const reason: MailboxRejectReason = !allowlisted ? "not_allowlisted" : "auth_failed";

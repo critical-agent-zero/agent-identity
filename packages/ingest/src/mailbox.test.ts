@@ -63,32 +63,38 @@ const stored = (deps: IngestDeps) =>
   (deps.emails.putEmail as ReturnType<typeof vi.fn>).mock.calls;
 
 describe("mailbox delivery gate: allowlist + authentication", () => {
-  it("delivers when a *@domain sender is allowlisted and DKIM passes", async () => {
+  it("delivers when a *@domain sender is allowlisted and DMARC passes", async () => {
     const deps = makeDeps("GitHub <noreply@github.com>");
-    await processRecord(record({ dkimVerdict: { status: "PASS" } }) as never, deps);
+    await processRecord(record({ dmarcVerdict: { status: "PASS" } }) as never, deps);
     expect(stored(deps)).toHaveLength(1);
     expect(stored(deps)[0][0]).toBe("ops");
     expect(deps.quarantineRaw).not.toHaveBeenCalled();
     expect(deps.events.map((e) => e.type)).toEqual(["email_received"]);
   });
 
-  it("delivers when DMARC passes (DKIM absent)", async () => {
+  it("quarantines an allowlisted *@domain sender on bare DKIM PASS (no DMARC alignment) — issue #114", async () => {
+    // DKIM PASS only proves SOME d= domain signed the message; it does not bind
+    // the signature to the From domain the allowlist matched. Only DMARC PASS
+    // does, so bare DKIM PASS must fail closed.
     const deps = makeDeps("GitHub <noreply@github.com>");
-    await processRecord(record({ dmarcVerdict: { status: "PASS" } }) as never, deps);
-    expect(stored(deps)).toHaveLength(1);
-    expect(deps.quarantineRaw).not.toHaveBeenCalled();
+    await processRecord(record({ dkimVerdict: { status: "PASS" } }) as never, deps);
+    expect(stored(deps)).toHaveLength(0);
+    expect(deps.quarantineRaw).toHaveBeenCalledWith("m1");
+    expect(deps.events[0]).toMatchObject({
+      type: "email_rejected", detail: { reason: "auth_failed" },
+    });
   });
 
-  it("delivers on an exact-address allowlist match + DKIM pass", async () => {
+  it("delivers on an exact-address allowlist match + DMARC pass", async () => {
     const deps = makeDeps("Status <alerts@status.example>");
-    await processRecord(record({ dkimVerdict: { status: "PASS" } }) as never, deps);
+    await processRecord(record({ dmarcVerdict: { status: "PASS" } }) as never, deps);
     expect(stored(deps)).toHaveLength(1);
     expect(stored(deps)[0][0]).toBe("ops");
   });
 
-  it("delivers a subdomain of a *@domain pattern on a label boundary", async () => {
+  it("delivers a subdomain of a *@domain pattern on a label boundary (DMARC pass)", async () => {
     const deps = makeDeps("<noreply@mail.github.com>");
-    await processRecord(record({ dkimVerdict: { status: "PASS" } }) as never, deps);
+    await processRecord(record({ dmarcVerdict: { status: "PASS" } }) as never, deps);
     expect(stored(deps)).toHaveLength(1);
   });
 });
@@ -190,7 +196,7 @@ describe("email_rejected redaction", () => {
 describe("catch-all routing", () => {
   it("routes an unknown local-part to the catch-all mailbox, still gated (delivers when allowlisted+auth)", async () => {
     const deps = makeDeps("GitHub <noreply@github.com>");
-    await processRecord(record({ dkimVerdict: { status: "PASS" } }, ["random@mail.example.com"]) as never, deps);
+    await processRecord(record({ dmarcVerdict: { status: "PASS" } }, ["random@mail.example.com"]) as never, deps);
     expect(stored(deps)).toHaveLength(1);
     expect(stored(deps)[0][0]).toBe("ops");
   });
@@ -215,10 +221,11 @@ describe("catch-all routing", () => {
 describe("numeric-agent delivery is unchanged by the mailbox path", () => {
   it("delivers to a numeric agent using the existing sender-allowlist behavior", async () => {
     const deps = makeDeps("GitHub <noreply@github.com>");
-    await processRecord(record({ dkimVerdict: { status: "PASS" } }, ["482913@mail.example.com"]) as never, deps);
+    await processRecord(record({ dmarcVerdict: { status: "PASS" } }, ["482913@mail.example.com"]) as never, deps);
     expect(stored(deps)).toHaveLength(1);
     expect(stored(deps)[0][0]).toBe("482913");
-    // Numeric path: delivered (allowlisted github.com) with an email_received event.
+    // Numeric path: delivered (allowlisted github.com) with an email_received
+    // event — attested provenance requires DMARC PASS (From-domain alignment).
     expect(deps.events.map((e) => e.type)).toEqual(["email_received"]);
     expect(deps.quarantineRaw).not.toHaveBeenCalled();
   });
