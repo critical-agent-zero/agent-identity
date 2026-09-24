@@ -1,29 +1,30 @@
 import { execFile } from "node:child_process";
-import { readFile as fsReadFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import {
   isPinnedLink, matchesSenderDomain,
   type AgentStatusState, type AgentStatusView, type CommitChange, type EmailSummary, type RepoRef,
 } from "@agent-identity/shared";
 import type { ClaimManager, IdentityStatus } from "./claim-manager.js";
-import { resolveInside } from "./sandbox.js";
+import { readInside, resolveInside } from "./sandbox.js";
 
 const execFileP = promisify(execFile);
 
 /** Filesystem/git seam for the size-agnostic forge tools (#118). Injected so
- *  tests drive them with fakes; production uses real disk + git. Every disk
- *  read goes through `resolvePath` (the sandbox choke point) — nothing here
- *  reads a path the resolver has not first proven is inside the root. */
+ *  tests drive them with fakes; production uses real disk + git. Every file
+ *  read goes through `readInside` — the sandbox choke point that resolves AND
+ *  reads in one shot, so no path is re-traversed after the containment check
+ *  (closing the resolve-then-read TOCTOU). `resolvePath` remains only for the
+ *  `dir` containment check (a directory handed to git, never read for bytes). */
 export interface ForgeEnv {
   cwd: () => string;
-  readFile: (absPath: string) => Promise<Buffer>;
+  readInside: (root: string, target: string) => Promise<Buffer>;
   resolvePath: (root: string, target: string) => string;
   git: (args: string[], cwd: string) => Promise<string>;
 }
 
 export const defaultForgeEnv: ForgeEnv = {
   cwd: () => process.cwd(),
-  readFile: (p) => fsReadFile(p),
+  readInside: async (root, target) => readInside(root, target),
   resolvePath: resolveInside,
   git: async (args, cwd) => {
     // 64MB cap: forge_deliver only reads `git diff --name-status`, whose
@@ -254,9 +255,9 @@ export function makeTools(manager: ClaimManager, env: ForgeEnv = defaultForgeEnv
           if (f.deleted === true) {
             changes.push({ path: f.path, deleted: true });
           } else if (typeof f.contentPath === "string") {
-            // Disk read — sandboxed to the process working directory.
-            const abs = env.resolvePath(env.cwd(), f.contentPath);
-            const base64 = (await env.readFile(abs)).toString("base64");
+            // Disk read — resolved AND read in one sandbox choke point
+            // (sandboxed to the process working directory, no TOCTOU gap).
+            const base64 = (await env.readInside(env.cwd(), f.contentPath)).toString("base64");
             changes.push(await streamedAdd(service, ref, f.path, base64));
           } else if (typeof f.content === "string") {
             changes.push(inlineAdd(service, f.path, f.content));
@@ -304,9 +305,9 @@ export function makeTools(manager: ClaimManager, env: ForgeEnv = defaultForgeEnv
             changes.push({ path, deleted: true });
             continue;
           }
-          // A / M / T: read the working-tree bytes, sandboxed to the repo dir.
-          const abs = env.resolvePath(realDir, path);
-          const base64 = (await env.readFile(abs)).toString("base64");
+          // A / M / T: read the working-tree bytes, resolved AND read in one
+          // sandbox choke point (sandboxed to the repo dir, no TOCTOU gap).
+          const base64 = (await env.readInside(realDir, path)).toString("base64");
           changes.push(await streamedAdd(service, ref, path, base64));
         }
         if (changes.length === 0) {

@@ -363,7 +363,7 @@ describe("forge_commit disk-read + streaming (#118)", () => {
   function env(over: Partial<ForgeEnv> = {}): ForgeEnv {
     return {
       cwd: () => "/repo",
-      readFile: vi.fn(async (p: string) => Buffer.from(`BYTES(${p})`)),
+      readInside: vi.fn(async (root: string, target: string) => Buffer.from(`BYTES(${root}/${target})`)),
       resolvePath: vi.fn((root: string, target: string) => `${root}/${target}`),
       git: vi.fn(async () => ""),
       ...over,
@@ -396,8 +396,9 @@ describe("forge_commit disk-read + streaming (#118)", () => {
       ],
     });
     expect(res).toEqual({ sha: "c1", url: "u" });
-    // sandbox resolver invoked against the working dir for the disk read
-    expect(e.resolvePath).toHaveBeenCalledWith("/repo", "build/app.js");
+    // sandbox choke point invoked against the working dir — one resolve+read,
+    // no path re-traversal after the containment check
+    expect(e.readInside).toHaveBeenCalledWith("/repo", "build/app.js");
     expect(forgePutBlob).toHaveBeenCalledWith("github", { owner: "fork", name: "r" },
       b64("BYTES(/repo/build/app.js)"));
     expect(forgeCommitChanges).toHaveBeenCalledWith("github", { owner: "fork", name: "r" }, {
@@ -431,7 +432,7 @@ describe("forge_commit disk-read + streaming (#118)", () => {
   it("returns a clean error when a contentPath escapes the sandbox", async () => {
     const forgeCommitChanges = vi.fn();
     const e = env({
-      resolvePath: vi.fn(() => { throw new SandboxError("path escapes the sandbox root"); }),
+      readInside: vi.fn(async () => { throw new SandboxError("path escapes the sandbox root"); }),
     });
     const tools = makeTools(managerWith({ forgeCommitChanges }), e);
     const res = await tools.forgeCommit({
@@ -451,7 +452,7 @@ describe("forge_deliver (#118)", () => {
   function env(over: Partial<ForgeEnv> = {}): ForgeEnv {
     return {
       cwd: () => "/work",
-      readFile: vi.fn(async (p: string) => Buffer.from(`BYTES(${p})`)),
+      readInside: vi.fn(async (root: string, target: string) => Buffer.from(`BYTES(${root}/${target})`)),
       resolvePath: vi.fn((root: string, target: string) => `${root}/${target}`),
       git: vi.fn(async () => ""),
       ...over,
@@ -488,9 +489,9 @@ describe("forge_deliver (#118)", () => {
       { path: "removed.ts", deleted: true },
       { path: "typechg.ts", blobSha: "blob-3" },
     ]);
-    // the modified file's bytes were read from inside the resolved repo dir
-    expect(e.resolvePath).toHaveBeenCalledWith("/work/sub/worktree", "changed/mod.ts");
-    expect(e.readFile).toHaveBeenCalledWith("/work/sub/worktree/changed/mod.ts");
+    // the modified file's bytes were read from inside the resolved repo dir,
+    // through the one-shot resolve+read choke point
+    expect(e.readInside).toHaveBeenCalledWith("/work/sub/worktree", "changed/mod.ts");
   });
 
   it("streams gitlab deliveries as inline base64 with no blob uploads", async () => {
