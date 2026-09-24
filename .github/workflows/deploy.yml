@@ -82,6 +82,7 @@ jobs:
           # infra/bin/app.ts falls back to MAIL_DOMAIN; secret (masked at job
           # setup) passed as env keeps it off the logged argv and step header
           MAIL_DOMAIN: ${{ secrets.MAIL_DOMAIN }}
+          BUDGET_EMAIL: ${{ secrets.BUDGET_EMAIL }}
         run: |
           set -euo pipefail
           # Outputs go to outputs.json only; sed drops the "Outputs:" block from the
