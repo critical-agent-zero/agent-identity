@@ -115,6 +115,31 @@ describe("mailbox domain catch-all (issue #114)", () => {
   });
 });
 
+describe("proxy github-app signing SSM grant (issue #120)", () => {
+  // The GitHub App params (/agent-identity/forge/github/app-id,
+  // installation-id, app-private-key) that the proxy reads to mint an
+  // installation token live under /agent-identity/forge/*, so the existing
+  // wildcard ssm:GetParameter grant already covers them — no new grant.
+  it("grants the proxy ssm:GetParameter on the whole /agent-identity/forge/* subtree", () => {
+    synth().hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "ssm:GetParameter",
+            Resource: Match.objectLike({
+              "Fn::Join": Match.arrayWith([
+                Match.arrayWith([
+                  Match.stringLikeRegexp(":parameter/agent-identity/forge/\\*$"),
+                ]),
+              ]),
+            }),
+          }),
+        ]),
+      },
+    });
+  });
+});
+
 describe("cost budget", () => {
   it("creates a $25 monthly budget with 80% actual and 100% forecast email alerts when budgetEmail is set", () => {
     const t = synth({}, { budgetEmail: "ops@example.com" });

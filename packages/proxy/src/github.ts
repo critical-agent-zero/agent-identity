@@ -22,8 +22,15 @@ export class GithubForge implements Forge {
     this.base = opts.apiBase ?? "https://api.github.com";
   }
 
-  private async gh<T>(method: string, path: string, agentId: string, body?: unknown): Promise<T> {
-    const token = await this.opts.credentials.resolve("github", agentId);
+  /** `commit: true` selects the COMMIT write-path token (a GitHub App
+   *  installation token when configured — GitHub verified-signs the commit,
+   *  issue #120); every other call uses the PAT via resolve(). */
+  private async gh<T>(
+    method: string, path: string, agentId: string, body?: unknown, commit = false,
+  ): Promise<T> {
+    const token = commit
+      ? await this.opts.credentials.resolveCommitToken("github", agentId)
+      : await this.opts.credentials.resolve("github", agentId);
     const res = await this.fetchFn(`${this.base}${path}`, {
       method,
       headers: {
@@ -83,24 +90,24 @@ export class GithubForge implements Forge {
     // them before the request leaves the process).
     const ref = `${r}/git/ref/heads/${encodeURIComponent(branch)}`;
     try {
-      const head = await this.gh<{ object: { sha: string } }>("GET", ref, agentId);
+      const head = await this.gh<{ object: { sha: string } }>("GET", ref, agentId, undefined, true);
       return head.object.sha;
     } catch (err) {
       if (!(err instanceof ForgeError && err.kind === "not_found")) throw err;
     }
     // An empty repo (fresh fork still importing) 404s here — the existing
     // retryable not_found, not a new error class.
-    const repo = await this.gh<{ default_branch: string }>("GET", r, agentId);
+    const repo = await this.gh<{ default_branch: string }>("GET", r, agentId, undefined, true);
     const def = await this.gh<{ object: { sha: string } }>(
-      "GET", `${r}/git/ref/heads/${encodeURIComponent(repo.default_branch)}`, agentId);
+      "GET", `${r}/git/ref/heads/${encodeURIComponent(repo.default_branch)}`, agentId, undefined, true);
     try {
       await this.gh("POST", `${r}/git/refs`, agentId,
-        { ref: `refs/heads/${branch}`, sha: def.object.sha });
+        { ref: `refs/heads/${branch}`, sha: def.object.sha }, true);
       return def.object.sha;
     } catch (err) {
       // The ref appeared between check and create — commit onto it as-is.
       if (err instanceof ForgeError && err.upstream === 422 && /already exists/i.test(err.message)) {
-        const head = await this.gh<{ object: { sha: string } }>("GET", ref, agentId);
+        const head = await this.gh<{ object: { sha: string } }>("GET", ref, agentId, undefined, true);
         return head.object.sha;
       }
       throw err;
@@ -128,21 +135,23 @@ export class GithubForge implements Forge {
   ): Promise<CommitResult> {
     const headSha = await this.resolveBranchHead(r, branch, actor.name);
     const baseCommit = await this.gh<{ tree: { sha: string } }>(
-      "GET", `${r}/git/commits/${headSha}`, actor.name);
+      "GET", `${r}/git/commits/${headSha}`, actor.name, undefined, true);
     const tree = await this.gh<{ sha: string }>("POST", `${r}/git/trees`, actor.name, {
       base_tree: baseCommit.tree.sha,
       tree: entries.map((e) => GithubForge.entry(e)),
-    });
-    // Only `author` is set to the acting identity; `committer` is
-    // intentionally left to GitHub's default (the PAT account) — that split
-    // is the attribution model, not an oversight.
+    }, true);
+    // Only `author` is set to the acting identity; `committer` is left to the
+    // commit-path token's account. Under a GitHub App installation token
+    // GitHub verified-signs the commit as the app (issue #120) while author
+    // stays the identity — that split is the attribution model, not an
+    // oversight. With no app configured this is the PAT (unsigned), unchanged.
     const commit = await this.gh<{ sha: string; html_url: string }>(
       "POST", `${r}/git/commits`, actor.name, {
         message, tree: tree.sha, parents: [headSha],
         author: { name: actor.name, email: actor.email },
-      });
+      }, true);
     await this.gh("PATCH", `${r}/git/refs/heads/${encodeURIComponent(branch)}`, actor.name,
-      { sha: commit.sha, force: false });
+      { sha: commit.sha, force: false }, true);
     return { sha: commit.sha, url: commit.html_url };
   }
 
@@ -159,7 +168,7 @@ export class GithubForge implements Forge {
     const r = this.repoPath(ref);
     const blob = await this.gh<{ sha: string }>("POST", `${r}/git/blobs`, actor.name, {
       content: spec.contentBase64, encoding: "base64",
-    });
+    }, true);
     return { sha: blob.sha };
   }
 

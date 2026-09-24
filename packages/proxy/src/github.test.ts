@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { CredentialStore } from "./forge.js";
 import { GithubForge } from "./github.js";
 
-const credentials: CredentialStore = { resolve: async () => "tok123" };
+const credentials: CredentialStore = {
+  resolve: async () => "tok123",
+  resolveCommitToken: async () => "commit-tok",
+};
 const actor = { name: "482913", email: "482913@agents.example" };
 
 type FakeRoute = { status?: number; json?: unknown; text?: string; headers?: Record<string, string> };
@@ -35,7 +38,9 @@ describe("GithubForge.getRepo", () => {
       [`GET ${B}`]: { json: { default_branch: "main" } },
       [`GET ${B}/git/ref/heads/main`]: { json: { object: { sha: "abc123" } } },
     });
-    const forge = new GithubForge({ credentials: { resolve }, fetch: fn });
+    const forge = new GithubForge({
+      credentials: { resolve, resolveCommitToken: resolve }, fetch: fn,
+    });
     const info = await forge.getRepo({ owner: "o", name: "r" }, actor);
     expect(info).toEqual({ defaultBranch: "main", headSha: "abc123" });
     expect(resolve).toHaveBeenCalledWith("github", "482913");
@@ -329,6 +334,58 @@ describe("GithubForge.fork", () => {
     const fork = await forge.fork({ owner: "o", name: "r" }, actor);
     expect(fork).toEqual({ owner: "critical-agent-zero", repo: "r", defaultBranch: "main" });
     expect(calls[0]!.init.method).toBe("POST");
+  });
+});
+
+describe("GithubForge commit-path vs PAT-path token selection (issue #120)", () => {
+  // A store that hands a DIFFERENT token to the commit write-path (App
+  // installation token) than to every other call (PAT), so we can assert
+  // per-call which credential authenticated the request. Fresh per test so
+  // the spies don't accumulate calls across cases.
+  const makeSplit = (): CredentialStore => ({
+    resolve: vi.fn(async () => "PAT"),
+    resolveCommitToken: vi.fn(async () => "INSTALL"),
+  });
+
+  const auth = (call: { init: RequestInit }) =>
+    new Headers(call.init.headers).get("authorization");
+
+  it("signs the commit write-path (blob/tree/commit/ref) with the installation token", async () => {
+    const { fn, calls } = makeFetch({
+      [`GET ${B}/git/ref/heads/main`]: { json: { object: { sha: "head1" } } },
+      [`GET ${B}/git/commits/head1`]: { json: { tree: { sha: "tree0" } } },
+      [`POST ${B}/git/trees`]: { json: { sha: "tree1" } },
+      [`POST ${B}/git/commits`]: { json: { sha: "c1", html_url: "u" } },
+      [`PATCH ${B}/git/refs/heads/main`]: { json: {} },
+      [`POST ${B}/git/blobs`]: { json: { sha: "b1" } },
+    });
+    const split = makeSplit();
+    const forge = new GithubForge({ credentials: split, fetch: fn });
+    await forge.putBlob({ owner: "o", name: "r" }, { contentBase64: "QQ==" }, actor);
+    await forge.createCommit({ owner: "o", name: "r" },
+      { branch: "main", message: "m", files: [{ path: "a", content: "A" }] }, actor);
+    // Every git-data write/read in the commit flow used the installation token.
+    for (const c of calls) expect(auth(c)).toBe("Bearer INSTALL");
+    expect((split.resolve as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+  });
+
+  it("keeps fork, PR-open, comment, and repo reads on the PAT", async () => {
+    const { fn, calls } = makeFetch({
+      [`GET ${B}`]: { json: { default_branch: "main" } },
+      [`GET ${B}/git/ref/heads/main`]: { json: { object: { sha: "abc" } } },
+      [`POST ${B}/forks`]: { json: { name: "r", owner: { login: "x" }, default_branch: "main" } },
+      [`POST ${B}/pulls`]: { json: { number: 1, html_url: "u" } },
+      [`POST ${B}/issues/7/comments`]: { json: { id: 1, html_url: "u" } },
+    });
+    const split = makeSplit();
+    const forge = new GithubForge({ credentials: split, fetch: fn });
+    await forge.getRepo({ owner: "o", name: "r" }, actor);
+    await forge.fork({ owner: "o", name: "r" }, actor);
+    await forge.openPullRequest({ owner: "o", name: "r" },
+      { head: "f", base: "main", title: "t", body: "b" }, actor);
+    await forge.comment({ owner: "o", name: "r" }, 7, "hi", actor);
+    for (const c of calls) expect(auth(c)).toBe("Bearer PAT");
+    expect((split.resolveCommitToken as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
 });
 
