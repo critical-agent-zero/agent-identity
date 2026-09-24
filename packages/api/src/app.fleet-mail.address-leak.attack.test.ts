@@ -101,6 +101,7 @@ function makeDeps(email: Record<string, unknown>): Deps {
     fleetKeyRequired: true,
     publicRepos: [],
     mailDomain: DOMAIN,
+    autoCapabilities: [],
   };
 }
 
