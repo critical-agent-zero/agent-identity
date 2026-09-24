@@ -15,6 +15,16 @@ export interface PoolProfile extends Keypair {
   agentId?: string;
   address?: string;
   github?: GithubLink;
+  // Server-granted capabilities recorded from the register response (e.g.
+  // birth grants under the deployment's auto-capabilities policy).
+  capabilities?: string[];
+  // Capabilities a fleet-key registration requested but the deployment's
+  // AUTO_CAPABILITIES policy refused at birth. Grants are birth-only
+  // server-side, so this identity can never gain them by re-registering.
+  // Recorded so retry loops and session restarts reuse this one parked
+  // probe as evidence of the refusal instead of registering a fresh
+  // (permanent) server identity per attempt — see ClaimManager.
+  refusedCapabilities?: string[];
 }
 
 export const poolDir = (base: string = defaultProfileDir()): string => join(base, "pool");
@@ -42,7 +52,11 @@ export function listPool(base?: string): Array<{ name: string; profile: PoolProf
 }
 
 export function hasCapabilities(profile: PoolProfile, require: string[]): boolean {
-  return require.every((cap) => (cap === "github" ? profile.github !== undefined : false));
+  // A capability is satisfied by the server-granted record on the profile,
+  // or — for github — by an operator-linked github account.
+  return require.every((cap) =>
+    (profile.capabilities ?? []).includes(cap)
+    || (cap === "github" && profile.github !== undefined));
 }
 
 export function savePoolProfile(

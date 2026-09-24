@@ -36,6 +36,24 @@ describe("provisionIdentities", () => {
     expect(listPool(dir).map((p) => p.name)).toEqual(["900000", "900001", "900002"]);
   });
 
+  it("passes requestedCapabilities through and records granted capabilities on the pool profile", async () => {
+    const dir = base();
+    const seen: unknown[] = [];
+    const results = await provisionIdentities({
+      count: 1, apiUrl: "https://api", fleetKey: "fk", base: dir,
+      requestedCapabilities: ["github"],
+      makeClient: () => ({
+        register: async (opts?: { requestedCapabilities?: string[] }) => {
+          seen.push(opts);
+          return { agentId: "900000", address: "900000@d", capabilities: ["github"] };
+        },
+      }),
+    });
+    expect(results).toEqual([{ agentId: "900000", address: "900000@d" }]);
+    expect(seen).toEqual([{ requestedCapabilities: ["github"] }]);
+    expect(listPool(dir)[0]!.profile.capabilities).toEqual(["github"]);
+  });
+
   it("continues past failures and reports them per identity", async () => {
     const dir = base();
     const results = await provisionIdentities({

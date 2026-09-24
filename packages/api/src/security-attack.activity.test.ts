@@ -43,6 +43,7 @@ function makeDeps(): Deps {
     fleetKeyRequired: true,
     publicRepos: [],
     mailDomain: "agents.example.com",
+    autoCapabilities: [],
   };
 }
 

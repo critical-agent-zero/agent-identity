@@ -80,6 +80,7 @@ function makeDeps(overrides: Record<string, unknown> = {}): Deps {
     publicRepos: parseRepoAllowlist("critical-labs/*"),
     mailDomain: "agents.example.com",
     ...(overrides.publicRepos !== undefined ? { publicRepos: overrides.publicRepos as string[] } : {}),
+    autoCapabilities: [],
   };
 }
 

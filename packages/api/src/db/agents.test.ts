@@ -15,8 +15,47 @@ describe("AgentsRepo.register", () => {
       Item: { agentId: "482913", address: "482913@mail.example.com", status: "active" },
     });
     const res = await repo.register("PUBKEY", "fp1");
-    expect(res).toEqual({ agentId: "482913", address: "482913@mail.example.com" });
+    expect(res).toEqual({
+      agentId: "482913", address: "482913@mail.example.com", capabilities: [], created: false,
+    });
     expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(0);
+  });
+
+  it("writes birth capabilities (deduped, sorted) into the AGENT item and reports created", async () => {
+    ddb.on(GetCommand).resolves({});
+    ddb.on(TransactWriteCommand).resolves({});
+    const res = await repo.register("PUBKEY", "fp1", ["github", "email", "github"]);
+    expect(res.created).toBe(true);
+    expect(res.capabilities).toEqual(["email", "github"]);
+    const tx = ddb.commandCalls(TransactWriteCommand)[0].args[0].input;
+    const agentItem = tx.TransactItems![1].Put!.Item!;
+    expect(agentItem.capabilities).toEqual(["email", "github"]);
+  });
+
+  it("writes NO capabilities attribute when none are granted at birth", async () => {
+    ddb.on(GetCommand).resolves({});
+    ddb.on(TransactWriteCommand).resolves({});
+    const res = await repo.register("PUBKEY", "fp1");
+    expect(res.created).toBe(true);
+    expect(res.capabilities).toEqual([]);
+    const tx = ddb.commandCalls(TransactWriteCommand)[0].args[0].input;
+    expect(tx.TransactItems![1].Put!.Item!).not.toHaveProperty("capabilities");
+  });
+
+  it("re-register of an existing key NEVER writes: birth-only, no retro-grant", async () => {
+    ddb.on(GetCommand).resolves({
+      Item: {
+        agentId: "482913", address: "482913@mail.example.com", status: "active",
+        capabilities: ["email"],
+      },
+    });
+    const res = await repo.register("PUBKEY", "fp1", ["github"]);
+    expect(res).toEqual({
+      agentId: "482913", address: "482913@mail.example.com",
+      capabilities: ["email"], created: false,
+    });
+    expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(0);
+    expect(ddb.commandCalls(UpdateCommand)).toHaveLength(0);
   });
 
   it("creates agent + addr mirror transactionally when new", async () => {

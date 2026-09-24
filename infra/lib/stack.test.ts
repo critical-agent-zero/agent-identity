@@ -59,6 +59,27 @@ describe("public fleet repo allowlist", () => {
   });
 });
 
+describe("auto-capabilities policy", () => {
+  it("defaults AUTO_CAPABILITIES to the empty string — the feature is off", () => {
+    synth().hasResourceProperties("AWS::Lambda::Function", {
+      Environment: {
+        Variables: Match.objectLike({ AUTO_CAPABILITIES: "", PUBLIC_REPOS: Match.anyValue() }),
+      },
+    });
+  });
+
+  it("honors the autoCapabilities context", () => {
+    synth({}, { autoCapabilities: "github,email" }).hasResourceProperties(
+      "AWS::Lambda::Function",
+      {
+        Environment: {
+          Variables: Match.objectLike({ AUTO_CAPABILITIES: "github,email" }),
+        },
+      },
+    );
+  });
+});
+
 describe("ingest sender allowlist", () => {
   it("defaults MAIL_SENDER_ALLOWLIST to the forge domains", () => {
     synth().hasResourceProperties("AWS::Lambda::Function", {

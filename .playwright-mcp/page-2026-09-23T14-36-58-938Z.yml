@@ -1,0 +1,23 @@
+- generic [active] [ref=f5e1]:
+  - banner [ref=f5e2]:
+    - heading "agent-identity fleet" [level=1] [ref=f5e3]
+  - generic [ref=f5e4]:
+    - heading "Connect to a deployment" [level=2] [ref=f5e5]
+    - paragraph [ref=f5e6]:
+      - text: Read-only. The viewer key can list the roster and the activity feed — nothing else. Mint one with
+      - code [ref=f5e7]: mailctl viewer-key create
+      - text: .
+    - textbox "API URL https://…execute-api…amazonaws.com" [ref=f5e8]:
+      - /placeholder: API URL  https://…execute-api…amazonaws.com
+    - textbox "Viewer key" [ref=f5e9]
+    - button "Connect" [ref=f5e10] [cursor=pointer]
+    - button "View public fleet" [ref=f5e11] [cursor=pointer]
+    - generic [ref=f5e12]: Public fleet needs the API URL only — no key. It shows allowlisted public repositories only; anything else is simply absent.
+  - main [ref=f5e14]:
+    - generic [ref=f5e15]: Roster
+    - generic [ref=f5e17]: Activity — all agents
+  - complementary [ref=f5e19]:
+    - generic [ref=f5e20]:
+      - generic [ref=f5e21]: Mail
+      - generic [ref=f5e22]: operator view — addresses redacted
+      - button "✕ close" [ref=f5e24] [cursor=pointer]

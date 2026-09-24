@@ -55,6 +55,7 @@ function makeDeps(allEvents: ActivityEvent[], roster: unknown[] = []): Deps {
     fleetKeyRequired: true,
     publicRepos: parseRepoAllowlist("critical-labs/*"),
     mailDomain: "agents.example.com",
+    autoCapabilities: [],
   };
 }
 

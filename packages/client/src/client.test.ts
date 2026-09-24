@@ -45,6 +45,24 @@ describe("AgentIdentityClient", () => {
     expect(id).toEqual({ agentId: "482913", address: "482913@d" });
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(new Headers(init.headers).get("x-fleet-key")).toBe("fk");
+    expect(init.body).toBeUndefined(); // plain register: unchanged wire shape
+  });
+
+  it("register passes requestedCapabilities in the signed body and returns granted capabilities", async () => {
+    const fetchMock = makeFetch({
+      agentId: "482913", address: "482913@d", capabilities: ["github"],
+    });
+    const client = new AgentIdentityClient({
+      apiUrl: "https://api.example", keypair: kp, fleetKey: "fk", fetch: fetchMock as never,
+    });
+    const id = await client.register({ requestedCapabilities: ["github"] });
+    expect(id).toEqual({ agentId: "482913", address: "482913@d", capabilities: ["github"] });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const body = init.body as string;
+    expect(JSON.parse(body)).toEqual({ requestedCapabilities: ["github"] });
+    const h = new Headers(init.headers);
+    const msg = canonicalString("POST", "/register", h.get("x-agent-timestamp")!, body);
+    expect(verify(msg, h.get("x-agent-signature")!, kp.publicKeySpkiBase64)).toBe(true);
   });
 
   it("throws with status and body on non-2xx", async () => {
