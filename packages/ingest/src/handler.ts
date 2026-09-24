@@ -1,7 +1,8 @@
-import type { ActivityRepo, AgentsRepo, EmailsRepo } from "@agent-identity/api";
+import type { ActivityRepo, AgentRecord, AgentsRepo, EmailsRepo, NewEmail } from "@agent-identity/api";
 import {
-  matchesSenderDomain, sanitizeAttestedEvent, sanitizeMailText, senderDomain,
-  type AuthVerdictStatus, type EmailAuthVerdicts,
+  matchesMailboxAllowlist, matchesSenderDomain, sanitizeAttestedEvent, sanitizeMailText,
+  senderDomain,
+  type AuthVerdictStatus, type EmailAuthVerdicts, type MailboxRejectReason,
 } from "@agent-identity/shared";
 import type { SESEventRecord, SESReceipt } from "aws-lambda";
 import { parseEmail } from "./parse.js";
@@ -10,7 +11,10 @@ export interface IngestDeps {
   getRaw: (s3Key: string) => Promise<Buffer>;
   putBodyOverflow: (agentId: string, emailId: string, body: object) => Promise<string>;
   quarantineRaw: (messageId: string) => Promise<void>;
-  agents: Pick<AgentsRepo, "getByLocalPart">;
+  // getByLocalPart resolves an exact local-part; getCatchAllMailbox (optional
+  // so a self-hoster mid-upgrade keeps working) resolves the domain catch-all
+  // mailbox for unknown local-parts.
+  agents: Pick<AgentsRepo, "getByLocalPart"> & Partial<Pick<AgentsRepo, "getCatchAllMailbox">>;
   emails: Pick<EmailsRepo, "putEmail">;
   /** Attested activity ledger. Optional so a self-hoster's ingest keeps
    *  working mid-upgrade before the ledger exists. */
@@ -32,6 +36,125 @@ function captureAuth(receipt: SESReceipt): EmailAuthVerdicts | undefined {
   return Object.keys(auth).length ? auth : undefined;
 }
 
+type ParsedEmail = Awaited<ReturnType<typeof parseEmail>>;
+
+interface DeliveryContext {
+  messageId: string;
+  timestamp: string;
+  rawS3Key: string;
+  auth?: EmailAuthVerdicts;
+}
+
+// Persist a parsed email, offloading an oversized body to S3. Shared by the
+// numeric-agent and mailbox delivery paths so the sanitize-at-write and
+// overflow behavior stays identical for both.
+async function storeEmail(
+  deps: IngestDeps, agentId: string, parsed: ParsedEmail, base: NewEmail,
+): Promise<void> {
+  const bodySize = Buffer.byteLength(parsed.text) + Buffer.byteLength(parsed.html ?? "");
+  if (bodySize > deps.maxInlineBodyBytes) {
+    const bodyS3Key = await deps.putBodyOverflow(agentId, base.messageId, {
+      text: parsed.text, html: parsed.html, links: parsed.links,
+    });
+    await deps.emails.putEmail(agentId, { ...base, bodyS3Key });
+  } else {
+    await deps.emails.putEmail(agentId, { ...base, text: parsed.text, html: parsed.html });
+  }
+}
+
+async function writeAttested(
+  deps: IngestDeps, event: Parameters<typeof sanitizeAttestedEvent>[0], messageId: string,
+): Promise<void> {
+  if (!deps.activity) return;
+  try {
+    await deps.activity.putEvent(sanitizeAttestedEvent(event));
+  } catch (error) {
+    // The mail's fate (stored or quarantined) is already sealed; a ledger
+    // outage must never change the delivery decision.
+    console.error("ingest: failed to write activity event", { messageId, error });
+  }
+}
+
+// Existing #83-#86 numeric-agent behavior, untouched: fail-open delivery with
+// an unsolicited FLAG for non-allowlisted senders, and an attested
+// email_received event only for authenticated, allowlisted mail.
+async function deliverToAgent(
+  deps: IngestDeps, agent: AgentRecord, parsed: ParsedEmail, ctx: DeliveryContext,
+): Promise<void> {
+  const unsolicited = !deps.senderAllowlist.some((d) => matchesSenderDomain(parsed.from, d));
+  await storeEmail(deps, agent.agentId, parsed, {
+    messageId: ctx.messageId,
+    from: parsed.from, subject: parsed.subject,
+    receivedAt: ctx.timestamp, links: parsed.links, rawS3Key: ctx.rawS3Key,
+    ...(ctx.auth ? { auth: ctx.auth } : {}),
+    ...(unsolicited ? { unsolicited: true } : {}),
+  });
+  // DMARC PASS is the ONLY SES verdict that binds the authenticated identifier
+  // to the From domain; SES exposes no d= domain, so bare DKIM PASS cannot be
+  // validated against From and must not mint attested provenance (issue #114).
+  const senderAuthenticated = ctx.auth?.dmarc === "PASS";
+  if (!unsolicited && senderAuthenticated) {
+    const domain = senderDomain(parsed.from);
+    if (domain) {
+      await writeAttested(deps, {
+        agentId: agent.agentId, ts: ctx.timestamp, class: "attested",
+        type: "email_received", summary: `email received from ${domain}`,
+        detail: { senderDomain: domain },
+      }, ctx.messageId);
+    }
+  }
+}
+
+// Named operator mailbox gate (issue #114) — the security boundary. An
+// always-live orchestration agent ACTS on this mail, so delivery is
+// FAIL-CLOSED: store the message only when BOTH the sender matches the
+// mailbox allowlist (hardened address / *@domain matching, never the display
+// name) AND authentication positively passed. Authentication here means DMARC
+// PASS — the only SES verdict that binds the authenticated identifier to the
+// From domain the allowlist is matched against. SPF PASS only authenticates the
+// envelope (spoofable), and bare DKIM PASS only means SOME d= domain signed the
+// message — SES exposes no d= value, so a DKIM PASS cannot be validated against
+// the From header (an attacker signs with their own domain while forging an
+// allowlisted From). Anything else is DROPPED to
+// quarantine (never the mailbox) with an attested email_rejected event that
+// carries the sender domain and a reason enum alone — never subject, body, or
+// full address.
+async function deliverToMailbox(
+  deps: IngestDeps, mailbox: AgentRecord, parsed: ParsedEmail, ctx: DeliveryContext,
+): Promise<void> {
+  const allowlisted = matchesMailboxAllowlist(parsed.from, mailbox.allowlist ?? []);
+  const authenticated = ctx.auth?.dmarc === "PASS";
+  if (!allowlisted || !authenticated) {
+    await deps.quarantineRaw(ctx.messageId);
+    const reason: MailboxRejectReason = !allowlisted ? "not_allowlisted" : "auth_failed";
+    const domain = senderDomain(parsed.from);
+    await writeAttested(deps, {
+      agentId: mailbox.agentId, ts: ctx.timestamp, class: "attested",
+      type: "email_rejected",
+      summary: domain ? `email rejected (${reason}) from ${domain}` : `email rejected (${reason})`,
+      detail: { reason, ...(domain ? { senderDomain: domain } : {}) },
+    }, ctx.messageId);
+    return;
+  }
+
+  await storeEmail(deps, mailbox.agentId, parsed, {
+    messageId: ctx.messageId,
+    from: parsed.from, subject: parsed.subject,
+    receivedAt: ctx.timestamp, links: parsed.links, rawS3Key: ctx.rawS3Key,
+    ...(ctx.auth ? { auth: ctx.auth } : {}),
+  });
+  // Delivered mailbox mail is allowlisted AND authenticated by construction,
+  // so the attested provenance requirement is already met.
+  const domain = senderDomain(parsed.from);
+  if (domain) {
+    await writeAttested(deps, {
+      agentId: mailbox.agentId, ts: ctx.timestamp, class: "attested",
+      type: "email_received", summary: `email received from ${domain}`,
+      detail: { senderDomain: domain },
+    }, ctx.messageId);
+  }
+}
+
 export async function processRecord(record: SESEventRecord, deps: IngestDeps): Promise<void> {
   const { mail, receipt } = record.ses;
   // Fail-open by design: only a positive FAIL verdict drops mail. Missing verdicts
@@ -47,13 +170,9 @@ export async function processRecord(record: SESEventRecord, deps: IngestDeps): P
   }
 
   const rawS3Key = `raw/${mail.messageId}`;
-  let parsed: Awaited<ReturnType<typeof parseEmail>> | undefined;
-
-  for (const recipient of receipt.recipients) {
-    const localPart = recipient.split("@")[0];
-    const agent = await deps.agents.getByLocalPart(localPart);
-    if (!agent || agent.status !== "active") continue;
-
+  const ctx: DeliveryContext = { messageId: mail.messageId, timestamp: mail.timestamp, rawS3Key, auth };
+  let parsed: ParsedEmail | undefined;
+  const ensureParsed = async (): Promise<ParsedEmail> => {
     if (!parsed) {
       const p = await parseEmail(await deps.getRaw(rawS3Key));
       // Storage-layer sanitization: subject, text, html, and links all reach
@@ -67,57 +186,28 @@ export async function processRecord(record: SESEventRecord, deps: IngestDeps): P
         links: p.links.map((l) => sanitizeMailText(l)),
       };
     }
-    // Flag, don't drop: non-allowlisted mail stays readable by explicit
-    // opt-in (includeUnsolicited) and for forensics.
-    const unsolicited =
-      !deps.senderAllowlist.some((d) => matchesSenderDomain(parsed!.from, d));
-    const bodySize = Buffer.byteLength(parsed.text) + Buffer.byteLength(parsed.html ?? "");
-    const base = {
-      messageId: mail.messageId,
-      from: parsed.from, subject: parsed.subject,
-      receivedAt: mail.timestamp, links: parsed.links, rawS3Key,
-      ...(auth ? { auth } : {}),
-      ...(unsolicited ? { unsolicited: true } : {}),
-    };
-    if (bodySize > deps.maxInlineBodyBytes) {
-      const bodyS3Key = await deps.putBodyOverflow(agent.agentId, mail.messageId, {
-        text: parsed.text, html: parsed.html, links: parsed.links,
-      });
-      await deps.emails.putEmail(agent.agentId, { ...base, bodyS3Key });
-    } else {
-      await deps.emails.putEmail(agent.agentId, {
-        ...base, text: parsed.text, html: parsed.html,
-      });
+    return parsed;
+  };
+
+  for (const recipient of receipt.recipients) {
+    const localPart = recipient.split("@")[0];
+    // Exact local-part match wins. Otherwise an unknown local-part routes to
+    // the domain catch-all mailbox when one opted in; with none, it is dropped
+    // (existing behavior — unknown recipients are never quarantined).
+    let target = await deps.agents.getByLocalPart(localPart);
+    if (!target || target.status !== "active") {
+      const catchAll = deps.agents.getCatchAllMailbox
+        ? await deps.agents.getCatchAllMailbox()
+        : undefined;
+      if (!catchAll || catchAll.status !== "active") continue;
+      target = catchAll;
     }
 
-    // Attested ledger event for delivered, allowlisted mail only — never for
-    // quarantined (returned above) or unsolicited mail. The event carries the
-    // sender DOMAIN alone: no subject, no body, no full address.
-    //
-    // Delivery above is fail-open by design (only explicit FAIL verdicts
-    // stop mail), which is an acceptable trade for a flagged mailbox — but a
-    // PERMANENT attested row is manufactured provenance, so it additionally
-    // demands a positive authentication verdict (DKIM or DMARC PASS). An
-    // unauthenticated (all-GRAY) spoof of an allowlisted domain still
-    // delivers; it never mints attested provenance.
-    const senderAuthenticated = auth?.dkim === "PASS" || auth?.dmarc === "PASS";
-    if (!unsolicited && senderAuthenticated && deps.activity) {
-      const domain = senderDomain(parsed.from);
-      if (domain) {
-        try {
-          await deps.activity.putEvent(sanitizeAttestedEvent({
-            agentId: agent.agentId, ts: mail.timestamp, class: "attested",
-            type: "email_received",
-            summary: `email received from ${domain}`,
-            detail: { senderDomain: domain },
-          }));
-        } catch (error) {
-          // The mail is stored; a ledger outage must not fail delivery.
-          console.error("ingest: failed to write activity event", {
-            messageId: mail.messageId, error,
-          });
-        }
-      }
+    const p = await ensureParsed();
+    if (target.mailbox) {
+      await deliverToMailbox(deps, target, p, ctx);
+    } else {
+      await deliverToAgent(deps, target, p, ctx);
     }
   }
 }

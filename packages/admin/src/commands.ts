@@ -1,6 +1,9 @@
 import {
-  DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, UpdateCommand,
+  DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, TransactWriteCommand, UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
+import {
+  fingerprint, generateKeypair, isValidMailboxSlug, type Keypair,
+} from "@agent-identity/shared";
 import { createHash, randomBytes } from "node:crypto";
 
 export async function createFleetKey(
@@ -43,6 +46,59 @@ export async function createViewerKey(
     Item: { PK: `VIEWER#${hash}`, SK: "VIEWER", label, createdAt: new Date().toISOString() },
   }));
   return key;
+}
+
+export interface MailboxResult {
+  address: string;
+  fingerprint: string;
+  keypair: Keypair;
+}
+
+/** Mint a named operator mailbox (issue #114): an identity whose local-part
+ *  is an operator-chosen slug, carrying a strict sender allowlist and an
+ *  optional domain catch-all. Writes the ADDR mirror (keyed by the slug) and
+ *  the AGENT record (marked `mailbox: true`) in one transaction; the caller
+ *  persists the returned keypair as the claimable pool profile. The private
+ *  key never touches DynamoDB. The slug is validated (and can never be a
+ *  6-digit numeric, so it cannot collide with a pool agentId), and both puts
+ *  are conditional so an existing identity is never clobbered. */
+export async function createMailbox(
+  ddb: DynamoDBDocumentClient, table: string, domain: string,
+  name: string, allowlist: string[], catchAll: boolean,
+): Promise<MailboxResult> {
+  if (!isValidMailboxSlug(name)) {
+    throw new Error(
+      `invalid mailbox slug "${name}": must match ^[a-z][a-z0-9-]{1,30}$ and not be a 6-digit numeric`,
+    );
+  }
+  const existing = await ddb.send(new GetCommand({
+    TableName: table, Key: { PK: `ADDR#${name}`, SK: "ADDR" },
+  }));
+  if (existing.Item) throw new Error(`local-part "${name}" already exists (identity or mailbox)`);
+
+  const keypair = generateKeypair();
+  const fp = fingerprint(keypair.publicKeySpkiBase64);
+  const address = `${name}@${domain}`;
+  await ddb.send(new TransactWriteCommand({
+    TransactItems: [
+      { Put: {
+        TableName: table,
+        Item: { PK: `ADDR#${name}`, SK: "ADDR", fingerprint: fp },
+        ConditionExpression: "attribute_not_exists(PK)",
+      }},
+      { Put: {
+        TableName: table,
+        Item: {
+          PK: `AGENT#${fp}`, SK: "AGENT", agentId: name, address,
+          publicKey: keypair.publicKeySpkiBase64, status: "active",
+          createdAt: new Date().toISOString(),
+          mailbox: true, allowlist, catchAll,
+        },
+        ConditionExpression: "attribute_not_exists(PK)",
+      }},
+    ],
+  }));
+  return { address, fingerprint: fp, keypair };
 }
 
 export interface AgentRow {

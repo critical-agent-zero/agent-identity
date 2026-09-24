@@ -1,8 +1,10 @@
 #!/usr/bin/env -S npx tsx
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import { poolDir, savePoolProfile } from "@agent-identity/client";
 import { Command } from "commander";
-import { createAdminKey, createFleetKey, createViewerKey, listAgents, revokeAgent, tagAgent, untagAgent } from "./commands.js";
+import { join } from "node:path";
+import { createAdminKey, createFleetKey, createMailbox, createViewerKey, listAgents, revokeAgent, tagAgent, untagAgent } from "./commands.js";
 
 const table = process.env.AGENT_IDENTITY_TABLE;
 if (!table) {
@@ -43,6 +45,35 @@ program.command("viewer-key")
     const key = await createViewerKey(ddb, table, opts.label);
     console.log("Viewer key (read-only fleet dashboard access; shown once, store it now):");
     console.log(key);
+  });
+
+// Named operator mailbox (issue #114): a stable receive-only address whose
+// delivery is gated on a strict sender allowlist AND positive authentication.
+program.command("mailbox")
+  .command("create <name>")
+  .description("mint a named operator mailbox (slug local-part) with a strict sender allowlist")
+  .requiredOption("--allow <list>", "comma-separated allowlist of exact addresses and *@domain patterns")
+  .option("--catch-all", "also route unknown local-parts at the domain into this mailbox", false)
+  .option("--domain <domain>", "mail domain (defaults to MAIL_DOMAIN)", process.env.MAIL_DOMAIN)
+  .action(async (name: string, opts: { allow: string; catchAll: boolean; domain?: string }) => {
+    if (!opts.domain) {
+      console.error("Set --domain or MAIL_DOMAIN (the mail domain, e.g. mail.example.com)");
+      process.exit(1);
+    }
+    const allowlist = opts.allow.split(",").map((s) => s.trim()).filter(Boolean);
+    if (allowlist.length === 0) {
+      console.error("--allow must list at least one address or *@domain pattern");
+      process.exit(1);
+    }
+    const { address, keypair } = await createMailbox(
+      ddb, table, opts.domain, name, allowlist, opts.catchAll,
+    );
+    // Write the claimable pool profile so an orchestration agent can claim it.
+    savePoolProfile({ ...keypair, agentId: name, address });
+    console.log(`Mailbox created: ${address}`);
+    console.log(`  allowlist:  ${allowlist.join(", ")}`);
+    console.log(`  catch-all:  ${opts.catchAll ? "yes (unknown local-parts route here)" : "no"}`);
+    console.log(`  profile:    ${join(poolDir(), `${name}.json`)}`);
   });
 
 const agent = program.command("agent");

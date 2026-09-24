@@ -1,6 +1,6 @@
 import type { AgentIdentity } from "@agent-identity/shared";
 import {
-  DynamoDBDocumentClient, GetCommand, TransactWriteCommand, UpdateCommand,
+  DynamoDBDocumentClient, GetCommand, ScanCommand, TransactWriteCommand, UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { createHash, randomInt } from "node:crypto";
 
@@ -11,6 +11,14 @@ export interface AgentRecord extends AgentIdentity {
   // Operator-set (admin route / mailctl), or granted at identity BIRTH by the
   // deployment's AUTO_CAPABILITIES policy. Re-registration never touches it.
   capabilities?: string[];
+  // Named operator mailbox (issue #114): minted by `mailctl mailbox create`
+  // with an operator-chosen slug agentId. Present only on mailboxes; numeric
+  // pool agents never carry these. `allowlist` holds exact addresses and
+  // *@domain patterns; `catchAll` routes unknown local-parts here. Ingest
+  // gates mailbox delivery on the allowlist AND positive authentication.
+  mailbox?: boolean;
+  allowlist?: string[];
+  catchAll?: boolean;
 }
 
 /** What register() resolved: the identity, its stored capabilities, and
@@ -42,6 +50,26 @@ export class AgentsRepo {
     }));
     if (!Item) return undefined;
     return this.getByFingerprint(Item.fingerprint as string);
+  }
+
+  /** The active catch-all mailbox, if one exists. Ingest calls this only when
+   *  an inbound local-part does not match any identity exactly, to route
+   *  unknown-local-part mail into the catch-all mailbox (still gated). Returns
+   *  undefined when no mailbox opted in, so ingest falls back to dropping
+   *  unknown recipients — fail closed. A revoked mailbox never catches. */
+  async getCatchAllMailbox(): Promise<AgentRecord | undefined> {
+    const { Items } = await this.ddb.send(new ScanCommand({
+      TableName: this.table,
+      FilterExpression: "SK = :sk AND mailbox = :m AND catchAll = :c AND #s = :active",
+      ExpressionAttributeNames: { "#s": "status" },
+      ExpressionAttributeValues: { ":sk": "AGENT", ":m": true, ":c": true, ":active": "active" },
+    }));
+    // Re-check in code: the DynamoDB filter is the fast path, but a mailbox
+    // that is not active-and-catch-all must never win even if the filter is
+    // ever relaxed — fail closed.
+    return (Items as AgentRecord[] | undefined)?.find(
+      (m) => m.status === "active" && m.mailbox === true && m.catchAll === true,
+    );
   }
 
   /** Idempotent registration. `birthCapabilities` (already policy-filtered

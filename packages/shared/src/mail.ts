@@ -9,20 +9,24 @@ const range = (from: number, to: number) => `${String.fromCodePoint(from)}-${Str
 // quoted sections are ignored when counting mailboxes.
 const QUOTED_RE = /"(?:[^"\\]|\\.)*"/g;
 
-// The display name of a From header is attacker-controlled; only the domain
-// of the address part counts. Angle-bracketed address wins over the bare form.
-// RFC 5322 allows several mailboxes in From and the parsed header preserves
-// them all; an attacker can append an allowlisted mailbox after their own
-// authenticated address, so any multi-mailbox From fails closed to undefined.
-export function senderDomain(from: string): string | undefined {
+// The display name of a From header is attacker-controlled; only the address
+// part counts. Angle-bracketed address wins over the bare form. RFC 5322
+// allows several mailboxes in From and the parsed header preserves them all;
+// an attacker can append an allowlisted mailbox after their own authenticated
+// address, so any multi-mailbox From fails closed to undefined.
+function singleAddressPart(from: string): string | undefined {
   const unquoted = from.replace(QUOTED_RE, "");
   const withAddress = unquoted.split(",").filter((part) => part.includes("@"));
   if (withAddress.length > 1 || (unquoted.match(/</g) ?? []).length > 1) return undefined;
   const angled = /<([^<>]*)>\s*$/.exec(from);
   const addr = (angled ? angled[1]! : from).trim();
-  const at = addr.lastIndexOf("@");
-  if (at < 0) return undefined;
-  const domain = addr.slice(at + 1).toLowerCase();
+  return addr.lastIndexOf("@") < 0 ? undefined : addr;
+}
+
+export function senderDomain(from: string): string | undefined {
+  const addr = singleAddressPart(from);
+  if (addr === undefined) return undefined;
+  const domain = addr.slice(addr.lastIndexOf("@") + 1).toLowerCase();
   if (!domain) return undefined;
   // A "domain" containing the stripped character class (bidi overrides,
   // zero-width, C0/C1 controls) or any whitespace is not a real mail domain
@@ -31,6 +35,20 @@ export function senderDomain(from: string): string | undefined {
   // count as allowlisted nor reach an attested email_received event.
   if (sanitizeMailText(domain) !== domain || /\s/.test(domain)) return undefined;
   return domain;
+}
+
+// The full lowercased address-part (localpart@domain), for exact-address
+// allowlist matching. Fails closed on the same multi-mailbox From as
+// senderDomain, and on any address whose text carries the injection-class
+// characters or whitespace — a `4<SHY>82913@…` lookalike that renders as an
+// allowlisted address must never match it.
+export function senderAddress(from: string): string | undefined {
+  const addr = singleAddressPart(from);
+  if (addr === undefined) return undefined;
+  const lower = addr.toLowerCase();
+  if (!lower.slice(lower.lastIndexOf("@") + 1)) return undefined;
+  if (sanitizeMailText(lower) !== lower || /\s/.test(lower)) return undefined;
+  return lower;
 }
 
 // Exact domain or subdomain, matched on a label boundary: mail.github.com
