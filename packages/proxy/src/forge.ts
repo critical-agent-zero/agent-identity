@@ -69,8 +69,16 @@ export interface Forge {
 
 export interface CredentialStore {
   /** Per-identity parameter first, shared fallback; throws
-   *  ForgeError("not_provisioned") when neither exists. */
+   *  ForgeError("not_provisioned") when neither exists. Used for every
+   *  non-commit call (fork, PR-open, comment, repo reads). */
   resolve(service: string, agentId: string): Promise<string>;
+  /** Token for the COMMIT write path. For github, mints a GitHub App
+   *  installation token when the app is configured (GitHub then auto-signs
+   *  the commit with its verified web-flow signature — issue #120); a
+   *  fully-absent app config falls back to resolve() (unsigned, as before),
+   *  and a partially-configured app FAILS CLOSED rather than silently
+   *  producing unsigned commits. Other services fall back to resolve(). */
+  resolveCommitToken(service: string, agentId: string): Promise<string>;
 }
 
 export interface Provisioner {

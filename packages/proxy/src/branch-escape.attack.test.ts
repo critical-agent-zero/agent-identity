@@ -33,7 +33,10 @@ const agent: AgentRecord = {
   status: "active", createdAt: "t", capabilities: ["github"],
 };
 
-const credentials: CredentialStore = { resolve: async () => "tok123" };
+const credentials: CredentialStore = {
+  resolve: async () => "tok123",
+  resolveCommitToken: async () => "tok123",
+};
 const actor = { name: "482913", email: "482913@agents.example" };
 
 const json = (body: unknown, status = 200) =>
