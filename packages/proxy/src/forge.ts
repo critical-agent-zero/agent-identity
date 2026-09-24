@@ -67,18 +67,38 @@ export interface Forge {
   repoVisibility(ref: RepoRef, actor: Author): Promise<RepoVisibility>;
 }
 
+/** Signs the commit object the proxy constructs so the forge reports the
+ *  commit `verified` (issue #120). The committer identity is stamped on the
+ *  commit (the signing bot, whose public key is registered as a signing key on
+ *  its forge account); the author stays the acting agent. */
+export interface CommitSigner {
+  committer: Author;
+  /** SSH-sign the canonical git commit object, returning the armored
+   *  "-----BEGIN SSH SIGNATURE-----" blob for the commit API's signature
+   *  field. Synchronous: signing is a pure crypto operation over the bytes. */
+  sign(canonicalCommitObject: Buffer): string;
+}
+
 export interface CredentialStore {
   /** Per-identity parameter first, shared fallback; throws
    *  ForgeError("not_provisioned") when neither exists. Used for every
    *  non-commit call (fork, PR-open, comment, repo reads). */
   resolve(service: string, agentId: string): Promise<string>;
   /** Token for the COMMIT write path. For github, mints a GitHub App
-   *  installation token when the app is configured (GitHub then auto-signs
-   *  the commit with its verified web-flow signature — issue #120); a
-   *  fully-absent app config falls back to resolve() (unsigned, as before),
-   *  and a partially-configured app FAILS CLOSED rather than silently
-   *  producing unsigned commits. Other services fall back to resolve(). */
+   *  installation token when the app is configured (a revocable, per-installation
+   *  auth for the commit-API calls — issue #121); a fully-absent app config
+   *  falls back to resolve() (the PAT), and a partially-configured app FAILS
+   *  CLOSED. Other services fall back to resolve(). This is AUTH only —
+   *  signing (verified=true) is a separate concern, see resolveCommitSigner. */
   resolveCommitToken(service: string, agentId: string): Promise<string>;
+  /** The commit signer when SSH commit signing is configured for the service
+   *  (the forge then reports the commit `verified` — issue #120), or undefined
+   *  when it is not (unsigned, as before). For github, reads the ed25519
+   *  signing key + committer identity from the store; FAILS CLOSED (throws)
+   *  when the key is present but the committer identity is not, so a half-set
+   *  signer can never silently emit an unverifiable commit. Non-signing
+   *  services (gitlab) return undefined. */
+  resolveCommitSigner(service: string, agentId: string): Promise<CommitSigner | undefined>;
 }
 
 export interface Provisioner {

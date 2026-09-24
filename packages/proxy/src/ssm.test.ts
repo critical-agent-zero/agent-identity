@@ -1,6 +1,8 @@
 import { generateKeyPairSync, verify as cryptoVerify } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { SsmCredentialStore } from "./ssm.js";
+import { FIX_KEY, FIX_MSG, FIX_SIG } from "./sshsig.fixture.js";
+import { sshSign } from "./sshsig.js";
 
 /** fake ssm: routes GetParameter by Name; missing names reject like the SDK. */
 function makeSsm(params: Record<string, string>) {
@@ -197,5 +199,79 @@ describe("SsmCredentialStore.resolveCommitToken (GitHub App signing, issue #120)
     expect(msg).not.toContain(pem.slice(40, 120));
     // no JWT segment (three base64url parts) leaked
     expect(msg).not.toMatch(/eyJ[\w-]+\.[\w-]+\.[\w-]+/);
+  });
+});
+
+describe("SsmCredentialStore.resolveCommitSigner (SSH commit signing, issue #120)", () => {
+  const signerParams = {
+    "/agent-identity/forge/github/signing-key": FIX_KEY,
+    "/agent-identity/forge/github/signing-committer-name": "critical-agent-zero",
+    "/agent-identity/forge/github/signing-committer-email":
+      "299802836+critical-agent-zero@users.noreply.github.com",
+  };
+
+  it("returns undefined for github when no signing key is configured (unsigned, as before)", async () => {
+    const send = makeSsm({ "/agent-identity/forge/github/pat": "pat-tok" });
+    const store = new SsmCredentialStore("/agent-identity/forge", { send } as never);
+    expect(await store.resolveCommitSigner("github", "482913")).toBeUndefined();
+  });
+
+  it("returns a signer that stamps the committer and SSH-signs with the configured key", async () => {
+    const send = makeSsm(signerParams);
+    const store = new SsmCredentialStore("/agent-identity/forge", { send } as never);
+    const signer = await store.resolveCommitSigner("github", "482913");
+    expect(signer).toBeDefined();
+    expect(signer!.committer).toEqual({
+      name: "critical-agent-zero",
+      email: "299802836+critical-agent-zero@users.noreply.github.com",
+    });
+    // The signer bound the configured key: signing the fixture message must
+    // reproduce ssh-keygen's frozen output for that key, byte-for-byte.
+    expect(signer!.sign(FIX_MSG)).toBe(FIX_SIG);
+    // and it agrees with the standalone signer over arbitrary bytes
+    const rnd = Buffer.from("some canonical commit object\n");
+    expect(signer!.sign(rnd)).toBe(sshSign(rnd, FIX_KEY));
+  });
+
+  it("FAILS CLOSED when the signing key is present but the committer name is absent", async () => {
+    const send = makeSsm({
+      "/agent-identity/forge/github/signing-key": FIX_KEY,
+      // committer-name MISSING
+      "/agent-identity/forge/github/signing-committer-email": "bot@example",
+    });
+    const store = new SsmCredentialStore("/agent-identity/forge", { send } as never);
+    await expect(store.resolveCommitSigner("github", "482913"))
+      .rejects.toMatchObject({ kind: "upstream_auth" });
+  });
+
+  it("FAILS CLOSED when the signing key is present but the committer email is absent", async () => {
+    const send = makeSsm({
+      "/agent-identity/forge/github/signing-key": FIX_KEY,
+      "/agent-identity/forge/github/signing-committer-name": "critical-agent-zero",
+      // committer-email MISSING
+    });
+    const store = new SsmCredentialStore("/agent-identity/forge", { send } as never);
+    await expect(store.resolveCommitSigner("github", "482913"))
+      .rejects.toMatchObject({ kind: "upstream_auth" });
+  });
+
+  it("returns undefined for non-github services (gitlab signing is out of scope)", async () => {
+    const send = makeSsm(signerParams);
+    const store = new SsmCredentialStore("/agent-identity/forge", { send } as never);
+    expect(await store.resolveCommitSigner("gitlab", "482913")).toBeUndefined();
+  });
+
+  it("never leaks the signing key in a fail-closed error message", async () => {
+    const send = makeSsm({ "/agent-identity/forge/github/signing-key": FIX_KEY });
+    const store = new SsmCredentialStore("/agent-identity/forge", { send } as never);
+    let thrown: unknown;
+    try {
+      await store.resolveCommitSigner("github", "482913");
+    } catch (e) {
+      thrown = e;
+    }
+    const msg = String((thrown as Error).message) + String((thrown as Error).stack ?? "");
+    expect(msg).not.toContain("OPENSSH PRIVATE KEY");
+    expect(msg).not.toContain(FIX_KEY.split("\n")[1]);
   });
 });

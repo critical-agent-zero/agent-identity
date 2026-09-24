@@ -3,6 +3,7 @@ import type {
   ForkResult, PrResult, PrSpec, RepoInfo, RepoRef,
   RepoVisibility,
 } from "@agent-identity/shared";
+import { canonicalCommitObject } from "./commit-object.js";
 import {
   ForgeError, type Author, type CredentialStore, type Forge,
 } from "./forge.js";
@@ -11,15 +12,20 @@ export interface GithubForgeOptions {
   credentials: CredentialStore;
   fetch?: typeof globalThis.fetch;
   apiBase?: string;
+  /** Clock for the signed commit's author/committer dates (issue #120),
+   *  injectable for deterministic tests. */
+  now?: () => number;
 }
 
 export class GithubForge implements Forge {
   private readonly fetchFn: typeof globalThis.fetch;
   private readonly base: string;
+  private readonly now: () => number;
 
   constructor(private readonly opts: GithubForgeOptions) {
     this.fetchFn = opts.fetch ?? globalThis.fetch;
     this.base = opts.apiBase ?? "https://api.github.com";
+    this.now = opts.now ?? Date.now;
   }
 
   /** `commit: true` selects the COMMIT write-path token (a GitHub App
@@ -133,6 +139,12 @@ export class GithubForge implements Forge {
     entries: { path: string; content?: string; sha?: string | null }[],
     actor: Author,
   ): Promise<CommitResult> {
+    // Resolve the signer FIRST: a partially-configured signer fails closed
+    // (throws), and doing it before any upstream call guarantees a
+    // misconfiguration creates NOTHING — no ref read, tree, commit, or ref
+    // move. When signing is off this returns undefined (unsigned, as before).
+    const signer = await this.opts.credentials.resolveCommitSigner("github", actor.name);
+
     const headSha = await this.resolveBranchHead(r, branch, actor.name);
     const baseCommit = await this.gh<{ tree: { sha: string } }>(
       "GET", `${r}/git/commits/${headSha}`, actor.name, undefined, true);
@@ -140,16 +152,36 @@ export class GithubForge implements Forge {
       base_tree: baseCommit.tree.sha,
       tree: entries.map((e) => GithubForge.entry(e)),
     }, true);
-    // Only `author` is set to the acting identity; `committer` is left to the
-    // commit-path token's account. Under a GitHub App installation token
-    // GitHub verified-signs the commit as the app (issue #120) while author
-    // stays the identity — that split is the attribution model, not an
-    // oversight. With no app configured this is the PAT (unsigned), unchanged.
+    const parents = [headSha];
+    const author: Author = { name: actor.name, email: actor.email };
+    // Baseline (unsigned) body: author is the acting identity, committer is
+    // left to the commit-path token's account. Unchanged when no signer is
+    // configured.
+    const body: Record<string, unknown> = { message, tree: tree.sha, parents, author };
+
+    // When SSH commit signing is configured (issue #120), sign the canonical
+    // commit object and stamp the committer (the signing bot, whose public key
+    // is registered as a signing key on its account) so the forge reports the
+    // commit verified. The author stays the acting identity — committer≠author
+    // is the attribution model. One timestamp is captured for BOTH dates and
+    // for the signed bytes, and the message is newline-terminated, so the
+    // object the forge reconstructs from these fields is byte-identical to what
+    // was signed (else the forge reports the signature invalid).
+    if (signer) {
+      const unixSec = Math.floor(this.now() / 1000);
+      const dateUtc = `${new Date(unixSec * 1000).toISOString().slice(0, 19)}Z`;
+      const message2 = message.endsWith("\n") ? message : `${message}\n`;
+      const canonical = canonicalCommitObject({
+        tree: tree.sha, parents, author, committer: signer.committer, message: message2, unixSec,
+      });
+      body.message = message2;
+      body.author = { ...author, date: dateUtc };
+      body.committer = { ...signer.committer, date: dateUtc };
+      body.signature = signer.sign(canonical);
+    }
+
     const commit = await this.gh<{ sha: string; html_url: string }>(
-      "POST", `${r}/git/commits`, actor.name, {
-        message, tree: tree.sha, parents: [headSha],
-        author: { name: actor.name, email: actor.email },
-      }, true);
+      "POST", `${r}/git/commits`, actor.name, body, true);
     await this.gh("PATCH", `${r}/git/refs/heads/${encodeURIComponent(branch)}`, actor.name,
       { sha: commit.sha, force: false }, true);
     return { sha: commit.sha, url: commit.html_url };

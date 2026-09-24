@@ -658,7 +658,10 @@ describe("policy enforcement", () => {
   it("fork-namespace rejection fires before branch auto-creation: no upstream request at all", async () => {
     const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
     const github = new GithubForge({
-      credentials: { resolve: async () => "tok", resolveCommitToken: async () => "tok" },
+      credentials: {
+        resolve: async () => "tok", resolveCommitToken: async () => "tok",
+        resolveCommitSigner: async () => undefined,
+      },
       fetch: fetchSpy as unknown as typeof globalThis.fetch,
     });
     const { deps } = makeDeps({

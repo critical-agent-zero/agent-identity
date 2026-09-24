@@ -1,6 +1,6 @@
 import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
-import { describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentIdentityStack, type AgentIdentityStackProps } from "./stack.js";
 
 // Skip Lambda asset bundling — these tests assert on synthesized resources,
@@ -137,6 +137,40 @@ describe("proxy github-app signing SSM grant (issue #120)", () => {
         ]),
       },
     });
+  });
+
+  // The SSH signing params — /agent-identity/forge/github/signing-key
+  // (SecureString ed25519 key), signing-committer-name, signing-committer-email
+  // — that resolveCommitSigner reads to SSH-sign commits (verified=true) also
+  // live under /agent-identity/forge/*, so the SAME wildcard covers them with
+  // no new grant and no KMS grant (the SecureString uses the AWS-managed SSM
+  // key). This guards against anyone narrowing the grant to only the app-*
+  // params, which would silently break signing. There must be exactly ONE
+  // ssm:GetParameter statement (the wildcard), not a per-parameter list.
+  it("covers the signing-key params under the same wildcard — no separate grant needed", () => {
+    const t = synth();
+    t.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "ssm:GetParameter",
+            Resource: Match.objectLike({
+              "Fn::Join": Match.arrayWith([
+                Match.arrayWith([Match.stringLikeRegexp(":parameter/agent-identity/forge/\\*$")]),
+              ]),
+            }),
+          }),
+        ]),
+      },
+    });
+    // No standalone grant scoped to github/signing-key: coverage is the wildcard.
+    const policies = t.findResources("AWS::IAM::Policy");
+    const statements = Object.values(policies).flatMap(
+      (p) => (p.Properties as { PolicyDocument: { Statement: { Action?: unknown }[] } })
+        .PolicyDocument.Statement,
+    );
+    const getParamStmts = statements.filter((s) => s.Action === "ssm:GetParameter");
+    expect(getParamStmts).toHaveLength(1);
   });
 });
 
