@@ -194,6 +194,106 @@ describe("GithubForge.createCommit branch auto-create", () => {
   });
 });
 
+describe("GithubForge.putBlob", () => {
+  it("POSTs a base64 blob and returns its sha", async () => {
+    const { fn, calls } = makeFetch({
+      [`POST ${B}/git/blobs`]: { json: { sha: "blobsha1" } },
+    });
+    const forge = new GithubForge({ credentials, fetch: fn });
+    const res = await forge.putBlob({ owner: "o", name: "r" }, { contentBase64: "QUJD" }, actor);
+    expect(res).toEqual({ sha: "blobsha1" });
+    const call = calls.find((c) => c.url.endsWith("/git/blobs"))!;
+    expect(call.init.method).toBe("POST");
+    expect(JSON.parse(call.init.body as string)).toEqual({ content: "QUJD", encoding: "base64" });
+  });
+
+  it("rejects a multi-segment repo before any request (path pinning)", async () => {
+    const { fn, calls } = makeFetch({});
+    const forge = new GithubForge({ credentials, fetch: fn });
+    await expect(forge.putBlob(
+      { owner: "fork-acct", name: "proxy/../../src/agent-identity" },
+      { contentBase64: "QQ==" }, actor,
+    )).rejects.toMatchObject({ kind: "invalid" });
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("GithubForge.commitChanges", () => {
+  const baseRoutes = {
+    [`GET ${B}/git/ref/heads/main`]: { json: { object: { sha: "head1" } } },
+    [`GET ${B}/git/commits/head1`]: { json: { tree: { sha: "tree0" } } },
+    [`POST ${B}/git/trees`]: { json: { sha: "tree1" } },
+    [`POST ${B}/git/commits`]: { json: { sha: "commit1", html_url: "https://github.com/o/r/commit/commit1" } },
+    [`PATCH ${B}/git/refs/heads/main`]: { json: { object: { sha: "commit1" } } },
+  };
+
+  it("builds base_tree + blob-sha entries + deletion (sha:null) and forces the author", async () => {
+    const { fn, calls } = makeFetch(baseRoutes);
+    const forge = new GithubForge({ credentials, fetch: fn });
+    const result = await forge.commitChanges({ owner: "o", name: "r" }, {
+      branch: "main", message: "feat: big",
+      changes: [
+        { path: "add.bin", blobSha: "b-add" },
+        { path: "keep.txt", content: "inline" },
+        { path: "gone.txt", deleted: true },
+      ],
+    }, actor);
+    expect(result).toEqual({ sha: "commit1", url: "https://github.com/o/r/commit/commit1" });
+
+    const treeCall = calls.find((c) => c.url.endsWith("/git/trees"))!;
+    expect(JSON.parse(treeCall.init.body as string)).toEqual({
+      base_tree: "tree0",
+      tree: [
+        { path: "add.bin", mode: "100644", type: "blob", sha: "b-add" },
+        { path: "keep.txt", mode: "100644", type: "blob", content: "inline" },
+        { path: "gone.txt", mode: "100644", type: "blob", sha: null },
+      ],
+    });
+
+    const commitCall = calls.find((c) => c.url.endsWith("/git/commits") && c.init.method === "POST")!;
+    expect(JSON.parse(commitCall.init.body as string)).toEqual({
+      message: "feat: big", tree: "tree1", parents: ["head1"],
+      author: { name: "482913", email: "482913@agents.example" },
+    });
+    const refCall = calls.find((c) => c.init.method === "PATCH")!;
+    expect(JSON.parse(refCall.init.body as string)).toEqual({ sha: "commit1", force: false });
+  });
+
+  it("auto-creates a missing branch from the repo's own default head, then commits", async () => {
+    const { fn, calls } = makeFetch({
+      [`GET ${B}/git/ref/heads/feat-x`]: { status: 404, json: { message: "Not Found" } },
+      [`GET ${B}`]: { json: { default_branch: "main" } },
+      [`GET ${B}/git/ref/heads/main`]: { json: { object: { sha: "defhead" } } },
+      [`POST ${B}/git/refs`]: { status: 201, json: { object: { sha: "defhead" } } },
+      [`GET ${B}/git/commits/defhead`]: { json: { tree: { sha: "tree0" } } },
+      [`POST ${B}/git/trees`]: { json: { sha: "tree1" } },
+      [`POST ${B}/git/commits`]: { json: { sha: "commit1", html_url: "u" } },
+      [`PATCH ${B}/git/refs/heads/feat-x`]: { json: {} },
+    });
+    const forge = new GithubForge({ credentials, fetch: fn });
+    await forge.commitChanges({ owner: "o", name: "r" }, {
+      branch: "feat-x", message: "m", changes: [{ path: "a", blobSha: "b1" }],
+    }, actor);
+    const refCreate = calls.findIndex((c) => c.url.endsWith("/git/refs") && c.init.method === "POST");
+    const commitPost = calls.findIndex((c) => c.url.endsWith("/git/commits") && c.init.method === "POST");
+    expect(refCreate).toBeGreaterThan(-1);
+    expect(refCreate).toBeLessThan(commitPost);
+    expect(JSON.parse(calls[commitPost]!.init.body as string).parents).toEqual(["defhead"]);
+  });
+
+  it("streams many files as one commit (each already a blob sha)", async () => {
+    const { fn, calls } = makeFetch(baseRoutes);
+    const forge = new GithubForge({ credentials, fetch: fn });
+    const changes = Array.from({ length: 40 }, (_, i) => ({ path: `f${i}`, blobSha: `b${i}` }));
+    await forge.commitChanges({ owner: "o", name: "r" }, { branch: "main", message: "m", changes }, actor);
+    // one tree, one commit, one ref update — no per-file upstream write here
+    expect(calls.filter((c) => c.url.endsWith("/git/trees")).length).toBe(1);
+    expect(calls.filter((c) => c.url.endsWith("/git/commits") && c.init.method === "POST").length).toBe(1);
+    const treeBody = JSON.parse(calls.find((c) => c.url.endsWith("/git/trees"))!.init.body as string);
+    expect(treeBody.tree).toHaveLength(40);
+  });
+});
+
 describe("GithubForge.openPullRequest and comment", () => {
   it("opens a PR", async () => {
     const { fn, calls } = makeFetch({

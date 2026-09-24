@@ -123,6 +123,51 @@ describe("fork-namespace pin vs path traversal (PR #94 review)", () => {
   });
 });
 
+describe("streaming commit path (#118) — a rejected target creates NOTHING", () => {
+  it("400s a blob whose repo dot-segments out of the fork namespace, no upstream request", async () => {
+    const net = githubNet();
+    const app = makeApp(net.fn);
+    const path = "/forge/github/blob";
+    const body = JSON.stringify({
+      owner: "fork-acct",
+      repo: "proxy-target/../../critical-labs/agent-identity",
+      contentBase64: "QQ==",
+    });
+    const res = await app.request(path, { ...signed("POST", path, body), body });
+    expect(res.status).toBe(400);
+    expect(net.fn).not.toHaveBeenCalled();
+    expect(net.writes).toEqual([]);
+  });
+
+  it("denies an off-namespace blob before any upstream request (fork-namespace pin)", async () => {
+    const net = githubNet();
+    const app = makeApp(net.fn);
+    const path = "/forge/github/blob";
+    const body = JSON.stringify({
+      owner: "critical-labs", repo: "agent-identity", contentBase64: "QQ==",
+    });
+    const res = await app.request(path, { ...signed("POST", path, body), body });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe("denied");
+    expect(net.fn).not.toHaveBeenCalled();
+  });
+
+  it("denies an off-namespace commit-changes before any upstream request", async () => {
+    const net = githubNet();
+    const app = makeApp(net.fn);
+    const path = "/forge/github/commit-changes";
+    const body = JSON.stringify({
+      owner: "critical-labs", repo: "agent-identity", branch: "feat-x", message: "m",
+      changes: [{ path: "f", blobSha: "b1" }],
+    });
+    const res = await app.request(path, { ...signed("POST", path, body), body });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe("denied");
+    expect(net.fn).not.toHaveBeenCalled();
+    expect(net.writes).toEqual([]);
+  });
+});
+
 describe("GithubForge path pinning (defense in depth below app validation)", () => {
   const spec = { branch: "b", message: "m", files: [{ path: "f", content: "x" }] };
 

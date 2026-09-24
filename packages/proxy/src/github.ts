@@ -1,5 +1,6 @@
 import type {
-  CommentResult, CommitResult, CommitSpec, ForkResult, PrResult, PrSpec, RepoInfo, RepoRef,
+  BlobResult, BlobSpec, CommentResult, CommitChangesSpec, CommitResult, CommitSpec,
+  ForkResult, PrResult, PrSpec, RepoInfo, RepoRef,
   RepoVisibility,
 } from "@agent-identity/shared";
 import {
@@ -106,28 +107,70 @@ export class GithubForge implements Forge {
     }
   }
 
-  async createCommit(ref: RepoRef, spec: CommitSpec, actor: Author): Promise<CommitResult> {
-    const r = this.repoPath(ref);
-    const headSha = await this.resolveBranchHead(r, spec.branch, actor.name);
+  /** One tree entry as the git-data API expects it. An add/modify sets
+   *  either `content` (inline UTF-8) or `sha` (a pre-uploaded blob); a
+   *  deletion sets `sha: null`, which removes the path from the base tree. */
+  private static entry(
+    e: { path: string; content?: string; sha?: string | null },
+  ): Record<string, unknown> {
+    return { mode: "100644", type: "blob", ...e };
+  }
+
+  /** The single tree→commit→ref write path shared by createCommit (inline
+   *  small path) and commitChanges (size-agnostic). CRITICAL: repoPath() has
+   *  already validated owner/repo and the proxy has already run the
+   *  fork-namespace policy + app-layer name/branch validation BEFORE this is
+   *  reached — no blob/tree/commit/ref write happens for a rejected target. */
+  private async commitTree(
+    r: string, branch: string, message: string,
+    entries: { path: string; content?: string; sha?: string | null }[],
+    actor: Author,
+  ): Promise<CommitResult> {
+    const headSha = await this.resolveBranchHead(r, branch, actor.name);
     const baseCommit = await this.gh<{ tree: { sha: string } }>(
       "GET", `${r}/git/commits/${headSha}`, actor.name);
     const tree = await this.gh<{ sha: string }>("POST", `${r}/git/trees`, actor.name, {
       base_tree: baseCommit.tree.sha,
-      tree: spec.files.map((f) => ({
-        path: f.path, mode: "100644", type: "blob", content: f.content,
-      })),
+      tree: entries.map((e) => GithubForge.entry(e)),
     });
     // Only `author` is set to the acting identity; `committer` is
     // intentionally left to GitHub's default (the PAT account) — that split
     // is the attribution model, not an oversight.
     const commit = await this.gh<{ sha: string; html_url: string }>(
       "POST", `${r}/git/commits`, actor.name, {
-        message: spec.message, tree: tree.sha, parents: [headSha],
+        message, tree: tree.sha, parents: [headSha],
         author: { name: actor.name, email: actor.email },
       });
-    await this.gh("PATCH", `${r}/git/refs/heads/${encodeURIComponent(spec.branch)}`, actor.name,
+    await this.gh("PATCH", `${r}/git/refs/heads/${encodeURIComponent(branch)}`, actor.name,
       { sha: commit.sha, force: false });
     return { sha: commit.sha, url: commit.html_url };
+  }
+
+  async createCommit(ref: RepoRef, spec: CommitSpec, actor: Author): Promise<CommitResult> {
+    const r = this.repoPath(ref);
+    return this.commitTree(r, spec.branch, spec.message,
+      spec.files.map((f) => ({ path: f.path, content: f.content })), actor);
+  }
+
+  async putBlob(ref: RepoRef, spec: BlobSpec, actor: Author): Promise<BlobResult> {
+    // repoPath() pins owner/repo to a single segment BEFORE the write — a
+    // blob for an off-namespace target is refused by the proxy policy first,
+    // and a malformed ref never leaves the process.
+    const r = this.repoPath(ref);
+    const blob = await this.gh<{ sha: string }>("POST", `${r}/git/blobs`, actor.name, {
+      content: spec.contentBase64, encoding: "base64",
+    });
+    return { sha: blob.sha };
+  }
+
+  async commitChanges(ref: RepoRef, spec: CommitChangesSpec, actor: Author): Promise<CommitResult> {
+    const r = this.repoPath(ref);
+    const entries = spec.changes.map((c) => {
+      if ("deleted" in c) return { path: c.path, sha: null };
+      if ("blobSha" in c) return { path: c.path, sha: c.blobSha };
+      return { path: c.path, content: c.content };
+    });
+    return this.commitTree(r, spec.branch, spec.message, entries, actor);
   }
 
   async openPullRequest(ref: RepoRef, spec: PrSpec, actor: Author): Promise<PrResult> {

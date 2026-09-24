@@ -146,6 +146,36 @@ describe("forge methods", () => {
     expect(verify(msg, h.get("x-agent-signature")!, kp.publicKeySpkiBase64)).toBe(true);
   });
 
+  it("forgePutBlob posts the base64 content to the blob path", async () => {
+    const fetchMock = makeFetch({ sha: "blob1" });
+    const client = new AgentIdentityClient({
+      apiUrl: "https://api.example", keypair: kp, fetch: fetchMock as never,
+    });
+    const res = await client.forgePutBlob("github", { owner: "o", name: "r" }, "QUJD");
+    expect(res).toEqual({ sha: "blob1" });
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.example/forge/github/blob");
+    expect(JSON.parse(init.body as string)).toEqual({ owner: "o", repo: "r", contentBase64: "QUJD" });
+  });
+
+  it("forgeCommitChanges posts the changes to the commit-changes path", async () => {
+    const fetchMock = makeFetch({ sha: "c1", url: "u" });
+    const client = new AgentIdentityClient({
+      apiUrl: "https://api.example", keypair: kp, fetch: fetchMock as never,
+    });
+    const res = await client.forgeCommitChanges("github", { owner: "o", name: "r" }, {
+      branch: "feat", message: "m",
+      changes: [{ path: "a", blobSha: "b1" }, { path: "gone", deleted: true }],
+    });
+    expect(res).toEqual({ sha: "c1", url: "u" });
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.example/forge/github/commit-changes");
+    expect(JSON.parse(init.body as string)).toEqual({
+      owner: "o", repo: "r", branch: "feat", message: "m",
+      changes: [{ path: "a", blobSha: "b1" }, { path: "gone", deleted: true }],
+    });
+  });
+
   it("forgeRepo GETs the repo info path", async () => {
     const fetchMock = makeFetch({ defaultBranch: "main", headSha: "abc" });
     const client = new AgentIdentityClient({

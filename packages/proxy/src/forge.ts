@@ -1,5 +1,6 @@
 import type {
-  CommentResult, CommitResult, CommitSpec, ForgeProvisionResult, ForkResult, PrResult, PrSpec,
+  BlobResult, BlobSpec, CommentResult, CommitChangesSpec, CommitResult, CommitSpec,
+  ForgeProvisionResult, ForkResult, PrResult, PrSpec,
   RepoInfo, RepoRef, RepoVisibility,
 } from "@agent-identity/shared";
 
@@ -43,6 +44,17 @@ export class ForgeError extends Error {
 export interface Forge {
   getRepo(ref: RepoRef, actor: Author): Promise<RepoInfo>;
   createCommit(ref: RepoRef, spec: CommitSpec, actor: Author): Promise<CommitResult>;
+  /** Upload one file's bytes as a blob and return its sha (#118). Streaming
+   *  path: the caller uploads each file separately so no single request
+   *  carries the whole change. Policy-gated identically to a commit — a
+   *  rejected target must create NOTHING. GitLab carries content inline in
+   *  the commit and rejects this as unsupported. */
+  putBlob(ref: RepoRef, spec: BlobSpec, actor: Author): Promise<BlobResult>;
+  /** Size-agnostic commit (#118): a tree/actions-based commit over a set of
+   *  changes (pre-uploaded blobs, inline content, or deletions). Authorship
+   *  is FORCED to the actor exactly as createCommit; branch auto-create and
+   *  the fork-namespace pin are unchanged. */
+  commitChanges(ref: RepoRef, spec: CommitChangesSpec, actor: Author): Promise<CommitResult>;
   openPullRequest(ref: RepoRef, spec: PrSpec, actor: Author): Promise<PrResult>;
   comment(ref: RepoRef, issue: number, body: string, actor: Author): Promise<CommentResult>;
   fork(ref: RepoRef, actor: Author): Promise<ForkResult>;

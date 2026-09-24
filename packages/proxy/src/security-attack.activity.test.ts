@@ -9,7 +9,7 @@
 import type { AgentRecord, NoncesRepo } from "@agent-identity/api";
 import {
   canonicalString, generateKeypair, sign,
-  type ActivityEvent, type CommitSpec, type RepoRef,
+  type ActivityEvent, type BlobSpec, type CommitChangesSpec, type CommitSpec, type RepoRef,
 } from "@agent-identity/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createProxyApp, type ProxyDeps } from "./app.js";
@@ -41,6 +41,13 @@ class RealisticForge implements Forge {
     return { defaultBranch: "main", headSha: "abc123" };
   }
   async createCommit(_ref: RepoRef, spec: CommitSpec, _actor: Author) {
+    assertValidRefname(spec.branch);
+    return { sha: "c1", url: "https://forge/c1" };
+  }
+  async putBlob(_ref: RepoRef, _spec: BlobSpec, _actor: Author) {
+    return { sha: "blob1" };
+  }
+  async commitChanges(_ref: RepoRef, spec: CommitChangesSpec, _actor: Author) {
     assertValidRefname(spec.branch);
     return { sha: "c1", url: "https://forge/c1" };
   }
