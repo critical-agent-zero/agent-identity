@@ -43,6 +43,12 @@ importers:
 
   packages/admin:
     dependencies:
+      '@agent-identity/client':
+        specifier: workspace:*
+        version: link:../client
+      '@agent-identity/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@aws-sdk/client-dynamodb':
         specifier: ^3.600.0
         version: 3.1079.0

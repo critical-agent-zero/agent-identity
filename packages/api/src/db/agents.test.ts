@@ -1,4 +1,4 @@
-import { DynamoDBDocumentClient, GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, ScanCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { mockClient } from "aws-sdk-client-mock";
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -112,6 +112,34 @@ describe("AgentsRepo lookups", () => {
     await repo.revoke("fp1");
     const call = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(call.Key).toEqual({ PK: "AGENT#fp1", SK: "AGENT" });
+  });
+});
+
+describe("AgentsRepo.getCatchAllMailbox", () => {
+  it("scans for an active mailbox with catchAll and returns it", async () => {
+    ddb.on(ScanCommand).resolves({
+      Items: [{
+        PK: "AGENT#fpops", SK: "AGENT", agentId: "ops", address: "ops@mail.example.com",
+        status: "active", mailbox: true, catchAll: true, allowlist: ["*@github.com"],
+      }],
+    });
+    const box = await repo.getCatchAllMailbox();
+    expect(box).toMatchObject({ agentId: "ops", mailbox: true, catchAll: true });
+  });
+
+  it("returns undefined when no catch-all mailbox exists", async () => {
+    ddb.on(ScanCommand).resolves({ Items: [] });
+    expect(await repo.getCatchAllMailbox()).toBeUndefined();
+  });
+
+  it("ignores a revoked catch-all mailbox", async () => {
+    ddb.on(ScanCommand).resolves({
+      Items: [{
+        PK: "AGENT#fpops", SK: "AGENT", agentId: "ops", status: "revoked",
+        mailbox: true, catchAll: true,
+      }],
+    });
+    expect(await repo.getCatchAllMailbox()).toBeUndefined();
   });
 });
 

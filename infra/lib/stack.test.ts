@@ -101,6 +101,20 @@ describe("ingest sender allowlist", () => {
   });
 });
 
+describe("mailbox domain catch-all (issue #114)", () => {
+  // A named mailbox's optional --catch-all routes unknown local-parts into it.
+  // No SES receipt-rule change is needed for this: the rule's recipient is
+  // already the bare domain, which SES treats as a catch-all matching EVERY
+  // local-part at that domain. The Lambda already receives mail for unknown
+  // local-parts (they are simply dropped today); catch-all is a pure
+  // ingest/table concern. This test pins that the recipient stays the domain.
+  it("receives all local-parts at the domain (bare-domain recipient = SES catch-all)", () => {
+    synth().hasResourceProperties("AWS::SES::ReceiptRule", {
+      Rule: Match.objectLike({ Recipients: ["mail.example.com"] }),
+    });
+  });
+});
+
 describe("cost budget", () => {
   it("creates a $25 monthly budget with 80% actual and 100% forecast email alerts when budgetEmail is set", () => {
     const t = synth({}, { budgetEmail: "ops@example.com" });

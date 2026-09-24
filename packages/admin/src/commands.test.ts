@@ -1,8 +1,9 @@
-import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { fingerprint } from "@agent-identity/shared";
 import { mockClient } from "aws-sdk-client-mock";
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { createAdminKey, createFleetKey, createViewerKey, listAgents, revokeAgent, tagAgent, untagAgent } from "./commands.js";
+import { createAdminKey, createFleetKey, createMailbox, createViewerKey, listAgents, revokeAgent, tagAgent, untagAgent } from "./commands.js";
 
 const ddb = mockClient(DynamoDBDocumentClient);
 beforeEach(() => ddb.reset());
@@ -73,6 +74,78 @@ describe("mailctl commands", () => {
   it("revokeAgent throws on unknown agentId", async () => {
     ddb.on(GetCommand).resolves({});
     await expect(revokeAgent(ddb as never, "tbl", "000000")).rejects.toThrow(/no agent/);
+  });
+});
+
+describe("createMailbox", () => {
+  it("mints a keypair and writes ADDR + AGENT rows for the slug", async () => {
+    ddb.on(GetCommand).resolves({}); // no collision
+    ddb.on(TransactWriteCommand).resolves({});
+    const res = await createMailbox(ddb as never, "tbl", "mail.example.com", "ops",
+      ["alerts@status.example", "*@github.com"], true);
+
+    expect(res.address).toBe("ops@mail.example.com");
+    expect(res.keypair.privateKeyPem).toContain("PRIVATE KEY");
+    expect(res.keypair.publicKeySpkiBase64).toMatch(/^[A-Za-z0-9+/=]+$/);
+    expect(res.fingerprint).toBe(fingerprint(res.keypair.publicKeySpkiBase64));
+
+    const tx = ddb.commandCalls(TransactWriteCommand)[0].args[0].input;
+    const items = tx.TransactItems!.map((t) => t.Put!.Item!);
+    const addr = items.find((i) => (i.PK as string).startsWith("ADDR#"))!;
+    const agent = items.find((i) => (i.PK as string).startsWith("AGENT#"))!;
+
+    expect(addr.PK).toBe("ADDR#ops");
+    expect(addr.SK).toBe("ADDR");
+    expect(addr.fingerprint).toBe(res.fingerprint);
+
+    expect(agent.PK).toBe(`AGENT#${res.fingerprint}`);
+    expect(agent.SK).toBe("AGENT");
+    expect(agent.agentId).toBe("ops");
+    expect(agent.address).toBe("ops@mail.example.com");
+    expect(agent.status).toBe("active");
+    expect(agent.mailbox).toBe(true);
+    expect(agent.catchAll).toBe(true);
+    expect(agent.allowlist).toEqual(["alerts@status.example", "*@github.com"]);
+    expect(agent.publicKey).toBe(res.keypair.publicKeySpkiBase64);
+
+    // Both puts guard against clobbering an existing identity.
+    for (const t of tx.TransactItems!) {
+      expect(t.Put!.ConditionExpression).toContain("attribute_not_exists");
+    }
+    // The private key is never written to the table.
+    expect(JSON.stringify(tx)).not.toContain(res.keypair.privateKeyPem);
+  });
+
+  it("stores catchAll=false when the flag is not set", async () => {
+    ddb.on(GetCommand).resolves({});
+    ddb.on(TransactWriteCommand).resolves({});
+    const res = await createMailbox(ddb as never, "tbl", "mail.example.com", "ops", ["*@github.com"], false);
+    const agent = ddb.commandCalls(TransactWriteCommand)[0].args[0].input
+      .TransactItems!.map((t) => t.Put!.Item!).find((i) => (i.PK as string).startsWith("AGENT#"))!;
+    expect(agent.catchAll).toBe(false);
+    expect(res.address).toBe("ops@mail.example.com");
+  });
+
+  it("rejects an invalid slug without writing", async () => {
+    await expect(createMailbox(ddb as never, "tbl", "d", "Ops", ["*@github.com"], false))
+      .rejects.toThrow(/slug/i);
+    await expect(createMailbox(ddb as never, "tbl", "d", "1ops", [], false))
+      .rejects.toThrow(/slug/i);
+    expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(0);
+  });
+
+  it("rejects a 6-digit numeric slug (pool agentId collision)", async () => {
+    await expect(createMailbox(ddb as never, "tbl", "d", "482913", [], false))
+      .rejects.toThrow(/slug/i);
+    expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(0);
+  });
+
+  it("rejects a collision with an existing identity", async () => {
+    ddb.on(GetCommand, { Key: { PK: "ADDR#ops", SK: "ADDR" } })
+      .resolves({ Item: { PK: "ADDR#ops", SK: "ADDR", fingerprint: "existing" } });
+    await expect(createMailbox(ddb as never, "tbl", "d", "ops", ["*@github.com"], false))
+      .rejects.toThrow(/exists|collision|taken/i);
+    expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(0);
   });
 });
 

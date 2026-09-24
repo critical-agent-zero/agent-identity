@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPinnedLink, matchesSenderDomain, sanitizeMailText, senderDomain } from "./mail.js";
+import { isPinnedLink, matchesSenderDomain, sanitizeMailText, senderAddress, senderDomain } from "./mail.js";
 
 // Control characters built by code point so this file itself stays free of
 // raw control bytes and invisible characters.
@@ -42,6 +42,30 @@ describe("senderDomain", () => {
     expect(senderDomain(`<x@evil${ESC}.github.com>`)).toBeUndefined();
     expect(senderDomain(`<x@evil${TAB}.github.com>`)).toBeUndefined();
     expect(senderDomain("<x@evil .github.com>")).toBeUndefined();
+  });
+});
+
+describe("senderAddress", () => {
+  it("returns the lowercased full address-part, never the display name", () => {
+    expect(senderAddress("Alerts <alerts@status.example>")).toBe("alerts@status.example");
+    expect(senderAddress("Alerts@Status.Example")).toBe("alerts@status.example");
+    expect(senderAddress("noreply@github.com <evil@attacker.example>")).toBe("evil@attacker.example");
+  });
+
+  it("returns undefined when no address is present", () => {
+    expect(senderAddress("just a name")).toBeUndefined();
+    expect(senderAddress("")).toBeUndefined();
+  });
+
+  it("fails closed on a multi-mailbox From header", () => {
+    expect(senderAddress("Evil <a@evil.example>, GitHub <noreply@github.com>")).toBeUndefined();
+    expect(senderAddress("a@evil.example, noreply@github.com")).toBeUndefined();
+  });
+
+  it("fails closed on an address carrying injection-class characters or whitespace", () => {
+    expect(senderAddress(`<a${cp(0x00ad)}@github.com>`)).toBeUndefined();
+    expect(senderAddress(`<x@evil${cp(0x202e)}${cp(0x200b)}.github.com>`)).toBeUndefined();
+    expect(senderAddress("<x@evil .github.com>")).toBeUndefined();
   });
 });
 
