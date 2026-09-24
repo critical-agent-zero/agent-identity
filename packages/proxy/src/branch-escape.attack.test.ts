@@ -36,6 +36,7 @@ const agent: AgentRecord = {
 const credentials: CredentialStore = {
   resolve: async () => "tok123",
   resolveCommitToken: async () => "tok123",
+  resolveCommitSigner: async () => undefined,
 };
 const actor = { name: "482913", email: "482913@agents.example" };
 

@@ -1,6 +1,7 @@
 import { createSign } from "node:crypto";
 import { GetParameterCommand, PutParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
-import { ForgeError, type CredentialStore } from "./forge.js";
+import { type CommitSigner, ForgeError, type CredentialStore } from "./forge.js";
+import { sshSign } from "./sshsig.js";
 
 const TTL_MS = 300_000;
 // Refresh the installation token this far before its stated expiry so a
@@ -67,6 +68,33 @@ export class SsmCredentialStore implements CredentialStore {
   /** Undefined when no App is configured (caller falls back to the PAT).
    *  Throws (fail-closed) when the App is only PARTIALLY configured — a
    *  half-set signer must never silently emit unsigned commits. */
+  /** SSH commit signer (issue #120). Undefined when no signing key is
+   *  configured (unsigned, as before). Reads the ed25519 signing key and the
+   *  bot committer identity from SSM; fails closed when the key is present but
+   *  the committer identity is not. The private key is captured only inside
+   *  the returned closure and is never logged or placed in an error. */
+  async resolveCommitSigner(service: string, agentId: string): Promise<CommitSigner | undefined> {
+    if (service !== "github") return undefined;
+    const signingKey = await this.tryGet(`${this.basePath}/github/signing-key`);
+    if (!signingKey) return undefined; // no key → unsigned (commit still succeeds)
+    const [name, email] = await Promise.all([
+      this.tryGet(`${this.basePath}/github/signing-committer-name`),
+      this.tryGet(`${this.basePath}/github/signing-committer-email`),
+    ]);
+    if (!name || !email) {
+      // A signing key with no committer identity would produce a commit whose
+      // signature cannot be attributed to a verified account — refuse rather
+      // than emit an unverifiable commit. The key is NOT echoed.
+      throw new ForgeError("upstream_auth",
+        "github commit signing is partially configured; set signing-committer-name and "
+        + "signing-committer-email (or clear signing-key) — refusing to sign without a committer");
+    }
+    return {
+      committer: { name, email },
+      sign: (canonicalCommitObject: Buffer) => sshSign(canonicalCommitObject, signingKey),
+    };
+  }
+
   private async githubInstallationToken(): Promise<string | undefined> {
     // Hot path: a live cached token needs no SSM reads and no exchange.
     if (this.appToken && this.now() < this.appToken.refreshAt) return this.appToken.token;

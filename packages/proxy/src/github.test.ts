@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import type { CredentialStore } from "./forge.js";
+import { type CommitSigner, type CredentialStore, ForgeError } from "./forge.js";
 import { GithubForge } from "./github.js";
+import { FIX_KEY } from "./sshsig.fixture.js";
+import { sshSign } from "./sshsig.js";
 
 const credentials: CredentialStore = {
   resolve: async () => "tok123",
   resolveCommitToken: async () => "commit-tok",
+  resolveCommitSigner: async () => undefined,
 };
 const actor = { name: "482913", email: "482913@agents.example" };
 
@@ -39,7 +42,8 @@ describe("GithubForge.getRepo", () => {
       [`GET ${B}/git/ref/heads/main`]: { json: { object: { sha: "abc123" } } },
     });
     const forge = new GithubForge({
-      credentials: { resolve, resolveCommitToken: resolve }, fetch: fn,
+      credentials: { resolve, resolveCommitToken: resolve, resolveCommitSigner: async () => undefined },
+      fetch: fn,
     });
     const info = await forge.getRepo({ owner: "o", name: "r" }, actor);
     expect(info).toEqual({ defaultBranch: "main", headSha: "abc123" });
@@ -345,6 +349,7 @@ describe("GithubForge commit-path vs PAT-path token selection (issue #120)", () 
   const makeSplit = (): CredentialStore => ({
     resolve: vi.fn(async () => "PAT"),
     resolveCommitToken: vi.fn(async () => "INSTALL"),
+    resolveCommitSigner: vi.fn(async () => undefined),
   });
 
   const auth = (call: { init: RequestInit }) =>
@@ -386,6 +391,113 @@ describe("GithubForge commit-path vs PAT-path token selection (issue #120)", () 
     await forge.comment({ owner: "o", name: "r" }, 7, "hi", actor);
     for (const c of calls) expect(auth(c)).toBe("Bearer PAT");
     expect((split.resolveCommitToken as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+  });
+});
+
+describe("GithubForge commit signing (issue #120)", () => {
+  const NOW_MS = 1_758_709_800_000; // fixed instant → unixSec 1758709800 = 2025-09-24T10:30:00Z
+  const UNIX = Math.floor(NOW_MS / 1000);
+  const botCommitter = {
+    name: "critical-agent-zero",
+    email: "299802836+critical-agent-zero@users.noreply.github.com",
+  };
+  const signer: CommitSigner = {
+    committer: botCommitter,
+    sign: (buf) => sshSign(buf, FIX_KEY),
+  };
+  const signingCreds: CredentialStore = {
+    resolve: async () => "tok",
+    resolveCommitToken: async () => "commit-tok",
+    resolveCommitSigner: async () => signer,
+  };
+  const routes = {
+    [`GET ${B}/git/ref/heads/main`]: { json: { object: { sha: "head1" } } },
+    [`GET ${B}/git/commits/head1`]: { json: { tree: { sha: "tree0" } } },
+    [`POST ${B}/git/trees`]: { json: { sha: "tree1" } },
+    [`POST ${B}/git/commits`]: { json: { sha: "c1", html_url: "u" } },
+    [`PATCH ${B}/git/refs/heads/main`]: { json: {} },
+  };
+  const commitBody = (calls: { url: string; init: RequestInit }[]) =>
+    JSON.parse(calls.find((c) => c.url.endsWith("/git/commits") && c.init.method === "POST")!
+      .init.body as string);
+
+  it("sets committer=bot, keeps author=agent, and both dates to one UTC instant", async () => {
+    const { fn, calls } = makeFetch(routes);
+    const forge = new GithubForge({ credentials: signingCreds, fetch: fn, now: () => NOW_MS });
+    await forge.createCommit({ owner: "o", name: "r" },
+      { branch: "main", message: "feat: signed", files: [{ path: "a", content: "A" }] }, actor);
+    const body = commitBody(calls);
+    expect(body.author).toEqual({ name: actor.name, email: actor.email, date: "2025-09-24T10:30:00Z" });
+    expect(body.committer).toEqual({ ...botCommitter, date: "2025-09-24T10:30:00Z" });
+    // one captured instant → author.date === committer.date, both integer-second UTC 'Z'
+    expect(body.author.date).toBe(body.committer.date);
+    expect(Math.floor(Date.parse(body.author.date) / 1000)).toBe(UNIX);
+  });
+
+  it("attaches an SSH signature over EXACTLY the bytes GitHub reconstructs from the body (GOLD)", async () => {
+    const { fn, calls } = makeFetch(routes);
+    const forge = new GithubForge({ credentials: signingCreds, fetch: fn, now: () => NOW_MS });
+    await forge.createCommit({ owner: "o", name: "r" },
+      { branch: "main", message: "feat: signed", files: [{ path: "a", content: "A" }] }, actor);
+    const body = commitBody(calls);
+    expect(body.signature).toMatch(/^-----BEGIN SSH SIGNATURE-----\n/);
+    // The message the proxy SENDS must end in a newline, so GitHub's verbatim
+    // reconstruction equals git's object convention (and the signed bytes).
+    expect(body.message.endsWith("\n")).toBe(true);
+    // Rebuild the commit object exactly as GitHub does from the request fields
+    // (author.date → unixSec + "+0000"; verbatim message) and assert the proxy
+    // signed those very bytes — the end-to-end verified=true guarantee.
+    const unixSec = Math.floor(Date.parse(body.author.date) / 1000);
+    const reconstructed = Buffer.from(
+      `tree ${body.tree}\n`
+      + `parent ${body.parents[0]}\n`
+      + `author ${body.author.name} <${body.author.email}> ${unixSec} +0000\n`
+      + `committer ${body.committer.name} <${body.committer.email}> ${unixSec} +0000\n`
+      + "\n"
+      + body.message,
+      "utf8",
+    );
+    expect(body.signature).toBe(sshSign(reconstructed, FIX_KEY));
+  });
+
+  it("uses the commit-path auth token AND signs (auth and signing are independent)", async () => {
+    const { fn, calls } = makeFetch(routes);
+    const forge = new GithubForge({ credentials: signingCreds, fetch: fn, now: () => NOW_MS });
+    await forge.createCommit({ owner: "o", name: "r" },
+      { branch: "main", message: "m", files: [{ path: "a", content: "A" }] }, actor);
+    for (const c of calls) {
+      expect(new Headers(c.init.headers).get("authorization")).toBe("Bearer commit-tok");
+    }
+  });
+
+  it("fails closed on a partial signing config BEFORE any upstream write (creates nothing)", async () => {
+    const { fn, calls } = makeFetch(routes);
+    const failing: CredentialStore = {
+      resolve: async () => "tok",
+      resolveCommitToken: async () => "commit-tok",
+      resolveCommitSigner: async () => {
+        throw new ForgeError("upstream_auth", "github commit signing is partially configured");
+      },
+    };
+    const forge = new GithubForge({ credentials: failing, fetch: fn, now: () => NOW_MS });
+    await expect(forge.createCommit({ owner: "o", name: "r" },
+      { branch: "main", message: "m", files: [{ path: "a", content: "A" }] }, actor))
+      .rejects.toMatchObject({ kind: "upstream_auth" });
+    expect(calls).toHaveLength(0); // no ref read, no tree, no commit, no ref move
+  });
+
+  it("omits committer, dates, and signature when no signer is configured (unsigned path unchanged)", async () => {
+    const { fn, calls } = makeFetch(routes);
+    const forge = new GithubForge({ credentials, fetch: fn, now: () => NOW_MS }); // resolveCommitSigner → undefined
+    await forge.createCommit({ owner: "o", name: "r" },
+      { branch: "main", message: "feat: x", files: [{ path: "a", content: "A" }] }, actor);
+    const body = commitBody(calls);
+    expect(body).toEqual({
+      message: "feat: x", tree: "tree1", parents: ["head1"],
+      author: { name: actor.name, email: actor.email },
+    });
+    expect(body.signature).toBeUndefined();
+    expect(body.committer).toBeUndefined();
   });
 });
 

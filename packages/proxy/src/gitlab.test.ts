@@ -5,6 +5,7 @@ import { GitlabForge } from "./gitlab.js";
 const credentials: CredentialStore = {
   resolve: async () => "glpat-x",
   resolveCommitToken: async () => "glpat-x",
+  resolveCommitSigner: async () => undefined,
 };
 const actor = { name: "482913", email: "482913@agents.example" };
 
@@ -29,7 +30,10 @@ describe("GitlabForge.getRepo", () => {
       [`GET ${P}`]: { json: { default_branch: "main" } },
       [`GET ${P}/repository/branches/main`]: { json: { commit: { id: "abc123" } } },
     });
-    const forge = new GitlabForge({ credentials: { resolve, resolveCommitToken: resolve }, fetch: fn });
+    const forge = new GitlabForge({
+      credentials: { resolve, resolveCommitToken: resolve, resolveCommitSigner: async () => undefined },
+      fetch: fn,
+    });
     const info = await forge.getRepo({ owner: "o", name: "r" }, actor);
     expect(info).toEqual({ defaultBranch: "main", headSha: "abc123" });
     expect(resolve).toHaveBeenCalledWith("gitlab", "482913");
