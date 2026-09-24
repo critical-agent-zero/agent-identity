@@ -86,6 +86,7 @@ function makeDeps(overrides: Record<string, unknown> = {}): Deps {
     fleetKeyRequired: true,
     publicRepos: [],
     mailDomain: "agents.example.com",
+    autoCapabilities: [],
   };
 }
 
