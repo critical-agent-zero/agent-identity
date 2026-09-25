@@ -38,3 +38,12 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
+      # The npx wrapper pins the main package by semver range, so it must be
+      # staged alongside every release that moves outside that range (e.g. a
+      # 0.x minor). Approve the main package first on npmjs.com, then this one.
+      - name: Stage publish mcp-shim wrapper
+        working-directory: packages/mcp-shim
+        run: npm stage publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"
