@@ -28,9 +28,11 @@ export class GithubForge implements Forge {
     this.now = opts.now ?? Date.now;
   }
 
-  /** `commit: true` selects the COMMIT write-path token (a GitHub App
-   *  installation token when configured — GitHub verified-signs the commit,
-   *  issue #120); every other call uses the PAT via resolve(). */
+  /** `commit: true` selects the COMMIT write-path AUTH token (a GitHub App
+   *  installation token when configured, #121; else the PAT); every other
+   *  call uses the PAT via resolve(). This token only authorizes the write —
+   *  the Verified signature is applied separately in commitTree via the
+   *  SSH commit signer (#120). */
   private async gh<T>(
     method: string, path: string, agentId: string, body?: unknown, commit = false,
   ): Promise<T> {

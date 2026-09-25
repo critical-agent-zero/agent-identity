@@ -54,9 +54,11 @@ export class SsmCredentialStore implements CredentialStore {
     return value;
   }
 
-  /** Credential for the COMMIT write path. For github, an App installation
-   *  token when the app is configured (GitHub then verified-signs the
-   *  commit); otherwise the PAT (unsigned, unchanged). */
+  /** AUTH credential for the COMMIT write path (NOT the signature). For
+   *  github, an App installation token when the app is configured; otherwise
+   *  the PAT. Whether the commit is verified is decided separately by
+   *  resolveCommitSigner (SSH signing, #120) — this token only authorizes the
+   *  git-data write and does not itself sign. */
   async resolveCommitToken(service: string, agentId: string): Promise<string> {
     if (service === "github") {
       const appToken = await this.githubInstallationToken();
@@ -65,9 +67,6 @@ export class SsmCredentialStore implements CredentialStore {
     return this.resolve(service, agentId);
   }
 
-  /** Undefined when no App is configured (caller falls back to the PAT).
-   *  Throws (fail-closed) when the App is only PARTIALLY configured — a
-   *  half-set signer must never silently emit unsigned commits. */
   /** SSH commit signer (issue #120). Undefined when no signing key is
    *  configured (unsigned, as before). Reads the ed25519 signing key and the
    *  bot committer identity from SSM; fails closed when the key is present but
@@ -95,6 +94,10 @@ export class SsmCredentialStore implements CredentialStore {
     };
   }
 
+  /** GitHub App installation token, or undefined when no App is configured
+   *  (caller falls back to the PAT). Throws (fail-closed) when the App is only
+   *  PARTIALLY configured — refusing to fall back rather than use a half-set
+   *  App. This is AUTH; the Verified signature is resolveCommitSigner (#120). */
   private async githubInstallationToken(): Promise<string | undefined> {
     // Hot path: a live cached token needs no SSM reads and no exchange.
     if (this.appToken && this.now() < this.appToken.refreshAt) return this.appToken.token;
