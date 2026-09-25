@@ -179,8 +179,10 @@ If the deploy job fails at `configure-aws-credentials`, the usual cause is a tru
 Bump `version` in `packages/dist/package.json`, commit, then tag and push:
 `git tag v<version> && git push origin v<version>`. The publish workflow
 tests, builds, smoke-tests the bins, and **stages**
-`@critical-labs/agent-identity` on npm — the version is uploaded non-public
-and goes live only when a maintainer approves it on npmjs.com (or with
+`@critical-labs/agent-identity` and then the `@critical-labs/agent-identity-mcp`
+npx wrapper on npm — each version is uploaded non-public and goes live only
+when a maintainer approves it on npmjs.com (approve the main package first; the
+wrapper depends on it) (or with
 `npm stage list @critical-labs/agent-identity` then
 `npm stage approve <stage-id> --otp <code>` — the `npm stage` command
 needs npm ≥ 11.15 / Node ≥ 22.14; older npm reports "Unknown command").
