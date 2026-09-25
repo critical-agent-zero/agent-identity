@@ -23,7 +23,9 @@ Ed25519 identity, and it holds the forge credentials server-side and executes
 
 Two properties hold *by construction*, not by policy: commit authorship is
 always the acting identity, and force-push / branch deletion do not exist in
-the surface.
+the surface. On GitHub, commits can also be cryptographically **signed** so they
+show the *Verified* badge while authorship stays the agent — see
+[commit signing](commit-signing.md).
 
 ## The fork-and-PR model
 
@@ -75,6 +77,9 @@ github|gitlab`.
   `-c githubForkOwner=<bot-login>` (GitHub commits fail closed until it is set),
   and create each account human-assisted (see [GitHub onboarding
   flow](../README.md#github-onboarding-flow)).
+- **Commit signing (GitHub, optional):** make agent commits show GitHub's
+  *Verified* badge — author stays the agent, a bot account signs — by
+  configuring an ed25519 signing key. See [commit signing](commit-signing.md).
 
 The original design specs live under [`docs/internal/`](internal/) —
 historical internal planning documents, possibly stale, kept for provenance.
