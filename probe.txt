@@ -1,0 +1,5 @@
+C1_u005c:[ꯍ]
+C2_double:[ꯍ]
+C3_plain:[AB]
+C4_u005c_s:[\s]
+END
