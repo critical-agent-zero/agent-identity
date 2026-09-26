@@ -27,6 +27,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm vitest run
       - run: npx tsc --noEmit -p tsconfig.base.json
+      - name: Lint deploy-log leak invariants
+        run: node scripts/check-workflows.mjs
       - name: CDK synth (no credentials)
         working-directory: infra
         run: pnpm exec cdk synth -c domain=ci.invalid > /dev/null
@@ -85,14 +87,18 @@ jobs:
           BUDGET_EMAIL: ${{ secrets.BUDGET_EMAIL }}
         run: |
           set -euo pipefail
-          # Outputs go to outputs.json only; sed drops the "Outputs:" block from the
-          # public log (ApiUrl, MxRecord, TableName). pipefail preserves cdk's exit code.
+          # Outputs go to outputs.json only; the sed keeps them out of the public
+          # log (ApiUrl, MxRecord, TableName). It deletes the output VALUE lines
+          # by their `AgentIdentity.<Key> = ` shape (and the "Outputs:" header) —
+          # not a range keyed on the "Outputs:"..."Stack ARN:" framing, so a CDK
+          # console-format change can't silently un-strip them or truncate the
+          # success log. pipefail preserves cdk's exit code across the pipe.
           pnpm exec cdk deploy --require-approval never --no-color \
             -c githubForkOwner=${{ vars.FORGE_GITHUB_FORK_OWNER }} \
             -c publicRepos=${{ vars.PUBLIC_REPOS }} \
             -c autoCapabilities=${{ vars.AUTO_CAPABILITIES }} \
             --outputs-file outputs.json 2>&1 \
-            | sed '/^Outputs:$/,/^Stack ARN:$/{/^Stack ARN:$/!d;}'
+            | sed -E '/^Outputs:$/d; /^AgentIdentity\.[A-Za-z0-9]+ = /d'
       - name: Activate SES receipt rule set
         working-directory: infra
         run: |
