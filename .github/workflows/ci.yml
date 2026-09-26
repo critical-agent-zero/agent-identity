@@ -25,6 +25,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm vitest run
       - run: npx tsc --noEmit -p tsconfig.base.json
+      - name: Lint deploy-log leak invariants
+        run: node scripts/check-workflows.mjs
       - name: CDK synth (no credentials)
         working-directory: infra
         run: pnpm exec cdk synth -c domain=ci.invalid > /dev/null
