@@ -195,4 +195,97 @@ describe("onboardGithubEmail", () => {
     expect(r.status).toBe("pending");
     expect(r.verificationLink).toBe(link);
   });
+
+  it("rejects a same-origin verification link for a DIFFERENT github account", async () => {
+    // Origin is exactly https://github.com but the path targets another
+    // account — clicking it would verify the attacker's address, not the bot's.
+    const otherAccount = "https://github.com/users/attacker/emails/1/confirm_verification/abc";
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi(), mailbox: fakeMailbox([verifyEmail], [otherAccount]), ...fast,
+    });
+    expect(r.status).toBe("no-verification-email");
+    expect(r.verificationLink).toBeUndefined();
+  });
+
+  it("rejects a login-prefix-extension path (/users/<login>x/emails/...)", async () => {
+    const prefixExt = "https://github.com/users/critical-agent-zerox/emails/1/confirm_verification/abc";
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi(), mailbox: fakeMailbox([verifyEmail], [prefixExt]), ...fast,
+    });
+    expect(r.status).toBe("no-verification-email");
+    expect(r.verificationLink).toBeUndefined();
+  });
+
+  it("rejects an encoded-slash traversal that keeps the pinned prefix literal (%2f)", async () => {
+    // new URL() leaves %2f opaque, so the raw path still starts with the bot's
+    // /users/<login>/emails/ — but GitHub, decoding server-side, would route it
+    // to /users/attacker/emails/. Refusing %2f/%2e in the path closes this.
+    const encoded =
+      "https://github.com/users/critical-agent-zero/emails/..%2f..%2fusers%2fattacker%2femails%2f1%2fconfirm_verification%2fx";
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi(), mailbox: fakeMailbox([verifyEmail], [encoded]), ...fast,
+    });
+    expect(r.status).toBe("no-verification-email");
+    expect(r.verificationLink).toBeUndefined();
+  });
+
+  it("rejects a literal dot-segment traversal (resolved by URL to another account)", async () => {
+    const traversal = "https://github.com/users/critical-agent-zero/emails/../../users/attacker/emails/1/confirm_verification/x";
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi(), mailbox: fakeMailbox([verifyEmail], [traversal]), ...fast,
+    });
+    expect(r.status).toBe("no-verification-email");
+    expect(r.verificationLink).toBeUndefined();
+  });
+
+  it("matches the bot login case-insensitively", async () => {
+    const mixedCase = "https://github.com/users/Critical-Agent-Zero/emails/1/confirm_verification/abc";
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi({ whoami: async () => "critical-agent-zero" }),
+      mailbox: fakeMailbox([verifyEmail], [mixedCase]), ...fast,
+    });
+    expect(r.status).toBe("pending");
+    expect(r.verificationLink).toBe(mixedCase);
+  });
+
+  it("bounds the poll with a `since` and ignores mail older than the onboarding start", async () => {
+    // A real epoch so the ISO `since` string is meaningful; an incrementing
+    // clock so the deadline is eventually reached.
+    const base = Date.parse("2026-06-01T12:00:00.000Z");
+    let tick = 0;
+    const now = () => base + tick++ * 500;
+    let capturedSince: string | undefined;
+    const staleMail = { id: "old", from: '"GitHub" <noreply@github.com>', subject: "verify", receivedAt: "2026-06-01T11:00:00.000Z" };
+    const mailbox: MailboxLike = {
+      listEmails: async (opts) => {
+        capturedSince = opts?.since;
+        return { emails: [staleMail].filter((e) => !opts?.since || e.receivedAt >= opts.since) };
+      },
+      getEmail: async () => ({ links: [link] }),
+    };
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi(), mailbox, sleep: async () => {}, pollMs: 1, timeoutSeconds: 1, now,
+    });
+    // NB: production filters `since` as a numeric epoch (Date.parse) server-side
+    // (packages/api/src/db/emails.ts); this fake does an ISO string compare,
+    // which is equivalent here only because the timestamps are same-format UTC.
+    expect(capturedSince).toBe("2026-06-01T11:55:00.000Z"); // start (12:00) minus the 5-min guard
+    expect(r.status).toBe("no-verification-email"); // the 11:00 stale mail is excluded
+  });
+
+  it("finds a verification mail that arrived after the onboarding start", async () => {
+    const base = Date.parse("2026-06-01T12:00:00.000Z");
+    let tick = 0;
+    const now = () => base + tick++ * 500;
+    const freshMail = { id: "new", from: '"GitHub" <noreply@github.com>', subject: "verify", receivedAt: "2026-06-01T12:00:05.000Z" };
+    const mailbox: MailboxLike = {
+      listEmails: async (opts) => ({ emails: [freshMail].filter((e) => !opts?.since || e.receivedAt >= opts.since) }),
+      getEmail: async () => ({ links: [link] }),
+    };
+    const r = await onboardGithubEmail({
+      address: ADDR, api: fakeApi(), mailbox, sleep: async () => {}, pollMs: 1, timeoutSeconds: 5, now,
+    });
+    expect(r.status).toBe("pending");
+    expect(r.verificationLink).toBe(link);
+  });
 });

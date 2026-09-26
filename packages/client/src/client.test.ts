@@ -102,6 +102,21 @@ describe("AgentIdentityClient", () => {
     expect(sleep).toHaveBeenCalledWith(2000);
   });
 
+  it("drains the discarded response body before retrying a 429 (releases the socket)", async () => {
+    const throttled = new Response("throttled", { status: 429 });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(throttled)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ agentId: "482913" }), { status: 200 }));
+    const sleep = vi.fn(async (_ms: number) => {});
+    const client = new AgentIdentityClient({
+      apiUrl: "https://api.example", keypair: kp, fetch: fetchMock as never, sleep,
+    });
+    await client.me();
+    // The retried response's body stream was consumed (cancelled), so undici
+    // can return the connection to the pool instead of pinning it.
+    expect(throttled.bodyUsed).toBe(true);
+  });
+
   it("gives up after two retries on persistent 429", async () => {
     const fetchMock = vi.fn(async () => new Response("throttled", { status: 429 }));
     const sleep = vi.fn(async (_ms: number) => {});

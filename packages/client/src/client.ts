@@ -61,6 +61,10 @@ export class AgentIdentityClient {
         const delayMs = retryAfter > 0
           ? Math.min(retryAfter, 30) * 1000
           : 500 * (attempt + 1) + Math.random() * 250;
+        // Drain the discarded response so the underlying socket is released to
+        // the pool instead of left pinned by an unconsumed body stream (undici
+        // holds the connection until the body is read or cancelled).
+        await res.body?.cancel().catch(() => {});
         await this.sleep(delayMs);
         continue;
       }
